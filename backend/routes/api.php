@@ -1,0 +1,266 @@
+<?php
+
+use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\BusinessPartnerController;
+use App\Http\Controllers\Api\CashAccountController;
+use App\Http\Controllers\Api\CashMovementController;
+use App\Http\Controllers\Api\CashTransferController;
+use App\Http\Controllers\Api\CategoryController;
+use App\Http\Controllers\Api\CompanyController;
+use App\Http\Controllers\Api\CompanyProfileController;
+use App\Http\Controllers\Api\CompanySetupController;
+use App\Http\Controllers\Api\HealthController;
+use App\Http\Controllers\Api\MasterRegistryController;
+use App\Http\Controllers\Api\OpeningBalanceController;
+use App\Http\Controllers\Api\ProductServiceController;
+use App\Http\Controllers\Api\ReferenceRegistryController;
+use App\Http\Controllers\Api\UnitController;
+use App\Http\Controllers\Api\UserAccessController;
+use Illuminate\Support\Facades\Route;
+
+Route::prefix('v1')->group(function () {
+    Route::get('/health', HealthController::class);
+    Route::get('/setup/status', [CompanySetupController::class, 'status']);
+    Route::post('/setup/bootstrap', [CompanySetupController::class, 'bootstrap'])->middleware('throttle:auth');
+    Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:auth');
+    Route::post('/auth/invitations/accept', [UserAccessController::class, 'accept'])->middleware('throttle:auth');
+
+    Route::middleware('auth:sanctum')->group(function () {
+        Route::post('/auth/logout', [AuthController::class, 'logout']);
+        Route::middleware('active.user')->group(function () {
+            Route::get('/auth/me', [AuthController::class, 'me']);
+            Route::get('/companies', [CompanyController::class, 'index']);
+            Route::post('/companies/{company}/activate', [CompanyController::class, 'activate']);
+
+            Route::middleware('company.context')->group(function () {
+                Route::get('/context/company', [CompanyController::class, 'current']);
+                Route::get('/settings/company', [CompanyProfileController::class, 'show'])->middleware('permission:settings.company.view');
+                Route::patch('/settings/company', [CompanyProfileController::class, 'update'])->middleware('permission:settings.company.edit');
+                Route::get('/settings/users', [UserAccessController::class, 'index'])->middleware('permission:settings.users.view');
+                Route::get('/settings/users/roles', [UserAccessController::class, 'roles'])->middleware('permission:settings.users.view');
+                Route::get('/settings/users/invitations', [UserAccessController::class, 'invitations'])->middleware('permission:settings.users.view');
+                Route::post('/settings/users/invitations', [UserAccessController::class, 'invite'])->middleware('permission:settings.users.invite')->middleware('throttle:admin');
+                Route::post('/settings/users/invitations/{invitation}/resend', [UserAccessController::class, 'resend'])->middleware('permission:settings.users.invite')->middleware('throttle:admin');
+                Route::post('/settings/users/invitations/{invitation}/cancel', [UserAccessController::class, 'cancel'])->middleware('permission:settings.users.manage');
+                Route::patch('/settings/users/{user}/role', [UserAccessController::class, 'changeRole'])->middleware('permission:settings.users.manage');
+                Route::patch('/settings/users/{user}/status/{status}', [UserAccessController::class, 'changeStatus'])->middleware('permission:settings.users.manage');
+                Route::get('/settings/activity', [UserAccessController::class, 'activity'])->middleware('permission:settings.activity.view');
+
+                Route::prefix('cash-accounts')->group(function () {
+                    Route::get('/types', [CashAccountController::class, 'types'])->middleware('permission:cash-accounts.accounts.view');
+                    Route::get('/lookups', [CashAccountController::class, 'lookups'])->middleware('permission:cash-accounts.search');
+                    Route::get('/summary', [CashAccountController::class, 'summary'])->middleware('permission:cash-accounts.view');
+                    Route::get('/needs-attention', [CashAccountController::class, 'needsAttention'])->middleware('permission:cash-accounts.view');
+                    Route::get('/movement-purposes', [CashMovementController::class, 'purposes'])->middleware('permission:cash-accounts.movements.view');
+                    Route::get('/movements', [CashMovementController::class, 'movementHistory'])->middleware('permission:cash-accounts.movements.history');
+                    Route::get('/cash-in', [CashMovementController::class, 'index'])->defaults('kind', 'cash_in')->middleware('permission:cash-accounts.movements.view');
+                    Route::post('/cash-in', [CashMovementController::class, 'store'])->defaults('kind', 'cash_in')->middleware('permission:cash-accounts.cash-in.create');
+                    Route::get('/cash-out', [CashMovementController::class, 'index'])->defaults('kind', 'cash_out')->middleware('permission:cash-accounts.movements.view');
+                    Route::post('/cash-out', [CashMovementController::class, 'store'])->defaults('kind', 'cash_out')->middleware('permission:cash-accounts.cash-out.create');
+                    Route::get('/transfers', [CashTransferController::class, 'index'])->middleware('permission:cash-accounts.transfers.view');
+                    Route::post('/transfers', [CashTransferController::class, 'store'])->middleware('permission:cash-accounts.transfers.create');
+                    Route::get('/', [CashAccountController::class, 'index'])->middleware('permission:cash-accounts.accounts.view');
+                    Route::post('/', [CashAccountController::class, 'store'])->middleware('permission:cash-accounts.accounts.create');
+                    Route::get('/opening-balances', [OpeningBalanceController::class, 'index'])->middleware('permission:cash-accounts.opening-balances.view');
+                    Route::post('/opening-balances', [OpeningBalanceController::class, 'store'])->middleware('permission:cash-accounts.opening-balances.create');
+                    Route::get('/opening-balances/{id}', [OpeningBalanceController::class, 'show'])->middleware('permission:cash-accounts.opening-balances.view');
+                    Route::patch('/opening-balances/{id}', [OpeningBalanceController::class, 'update'])->middleware('permission:cash-accounts.opening-balances.update');
+                    Route::post('/opening-balances/{id}/submit', [OpeningBalanceController::class, 'submit'])->middleware('permission:cash-accounts.opening-balances.submit');
+                    Route::post('/opening-balances/{id}/approve', [OpeningBalanceController::class, 'approve'])->middleware('permission:cash-accounts.opening-balances.approve');
+                    Route::post('/opening-balances/{id}/return', [OpeningBalanceController::class, 'reject'])->middleware('permission:cash-accounts.opening-balances.review');
+                    Route::post('/opening-balances/{id}/post', [OpeningBalanceController::class, 'post'])->middleware('permission:cash-accounts.opening-balances.post');
+                    Route::post('/opening-balances/{id}/reverse', [OpeningBalanceController::class, 'reverse'])->middleware('permission:cash-accounts.opening-balances.reverse');
+                    Route::post('/opening-balances/{id}/evidence', [OpeningBalanceController::class, 'uploadEvidence'])->middleware('permission:cash-accounts.evidence.upload');
+                    Route::get('/opening-balances/{id}/evidence', [OpeningBalanceController::class, 'evidence'])->middleware('permission:cash-accounts.evidence.view');
+                    Route::get('/opening-balances/{id}/evidence/{attachmentId}/download', [OpeningBalanceController::class, 'downloadEvidence'])->middleware('permission:cash-accounts.evidence.download');
+                    Route::get('/opening-balances/{id}/history', [OpeningBalanceController::class, 'history'])->middleware('permission:cash-accounts.history');
+                    Route::get('/cash-in/{id}', [CashMovementController::class, 'show'])->middleware('permission:cash-accounts.movements.view');
+                    Route::patch('/cash-in/{id}', [CashMovementController::class, 'update'])->middleware('permission:cash-accounts.cash-in.update');
+                    Route::get('/cash-out/{id}', [CashMovementController::class, 'show'])->middleware('permission:cash-accounts.movements.view');
+                    Route::patch('/cash-out/{id}', [CashMovementController::class, 'update'])->middleware('permission:cash-accounts.cash-out.update');
+                    Route::get('/transfers/{id}', [CashTransferController::class, 'show'])->middleware('permission:cash-accounts.transfers.view');
+                    Route::patch('/transfers/{id}', [CashTransferController::class, 'update'])->middleware('permission:cash-accounts.transfers.update');
+                    Route::post('/transfers/{id}/submit', [CashTransferController::class, 'submit'])->middleware('permission:cash-accounts.transfers.submit');
+                    Route::post('/transfers/{id}/review', [CashTransferController::class, 'review'])->middleware('permission:cash-accounts.transfers.review');
+                    Route::post('/transfers/{id}/approve', [CashTransferController::class, 'approve'])->middleware('permission:cash-accounts.transfers.approve');
+                    Route::post('/transfers/{id}/post', [CashTransferController::class, 'post'])->middleware('permission:cash-accounts.transfers.post');
+                    Route::post('/transfers/{id}/cancel', [CashTransferController::class, 'cancel'])->middleware('permission:cash-accounts.transfers.cancel');
+                    Route::post('/transfers/{id}/reverse', [CashTransferController::class, 'reverse'])->middleware('permission:cash-accounts.transfers.reverse');
+                    Route::post('/transfers/{id}/evidence', [CashTransferController::class, 'uploadEvidence'])->middleware('permission:cash-accounts.movements.evidence.upload');
+                    Route::get('/transfers/{id}/evidence', [CashTransferController::class, 'evidence'])->middleware('permission:cash-accounts.movements.evidence.view');
+                    Route::get('/transfers/{id}/evidence/{attachmentId}/download', [CashTransferController::class, 'downloadEvidence'])->middleware('permission:cash-accounts.movements.evidence.download');
+                    Route::get('/transfers/{id}/history', [CashTransferController::class, 'history'])->middleware('permission:cash-accounts.movements.history');
+                    Route::post('/cash-in/{id}/submit', [CashMovementController::class, 'submit'])->middleware('permission:cash-accounts.cash-in.submit');
+                    Route::post('/cash-in/{id}/review', [CashMovementController::class, 'review'])->middleware('permission:cash-accounts.cash-in.review');
+                    Route::post('/cash-in/{id}/approve', [CashMovementController::class, 'approve'])->middleware('permission:cash-accounts.cash-in.approve');
+                    Route::post('/cash-in/{id}/post', [CashMovementController::class, 'post'])->middleware('permission:cash-accounts.cash-in.post');
+                    Route::post('/cash-in/{id}/cancel', [CashMovementController::class, 'cancel'])->middleware('permission:cash-accounts.cash-in.cancel');
+                    Route::post('/cash-in/{id}/reverse', [CashMovementController::class, 'reverse'])->middleware('permission:cash-accounts.cash-in.reverse');
+                    Route::post('/cash-in/{id}/evidence', [CashMovementController::class, 'uploadEvidence'])->middleware('permission:cash-accounts.movements.evidence.upload');
+                    Route::get('/cash-in/{id}/evidence', [CashMovementController::class, 'evidence'])->middleware('permission:cash-accounts.movements.evidence.view');
+                    Route::get('/cash-in/{id}/evidence/{attachmentId}/download', [CashMovementController::class, 'downloadEvidence'])->middleware('permission:cash-accounts.movements.evidence.download');
+                    Route::get('/cash-in/{id}/history', [CashMovementController::class, 'history'])->middleware('permission:cash-accounts.movements.history');
+                    Route::post('/cash-out/{id}/submit', [CashMovementController::class, 'submit'])->middleware('permission:cash-accounts.cash-out.submit');
+                    Route::post('/cash-out/{id}/review', [CashMovementController::class, 'review'])->middleware('permission:cash-accounts.cash-out.review');
+                    Route::post('/cash-out/{id}/approve', [CashMovementController::class, 'approve'])->middleware('permission:cash-accounts.cash-out.approve');
+                    Route::post('/cash-out/{id}/post', [CashMovementController::class, 'post'])->middleware('permission:cash-accounts.cash-out.post');
+                    Route::post('/cash-out/{id}/cancel', [CashMovementController::class, 'cancel'])->middleware('permission:cash-accounts.cash-out.cancel');
+                    Route::post('/cash-out/{id}/reverse', [CashMovementController::class, 'reverse'])->middleware('permission:cash-accounts.cash-out.reverse');
+                    Route::post('/cash-out/{id}/evidence', [CashMovementController::class, 'uploadEvidence'])->middleware('permission:cash-accounts.movements.evidence.upload');
+                    Route::get('/cash-out/{id}/evidence', [CashMovementController::class, 'evidence'])->middleware('permission:cash-accounts.movements.evidence.view');
+                    Route::get('/cash-out/{id}/evidence/{attachmentId}/download', [CashMovementController::class, 'downloadEvidence'])->middleware('permission:cash-accounts.movements.evidence.download');
+                    Route::get('/cash-out/{id}/history', [CashMovementController::class, 'history'])->middleware('permission:cash-accounts.movements.history');
+                    Route::get('/{id}', [CashAccountController::class, 'show'])->middleware('permission:cash-accounts.accounts.view');
+                    Route::patch('/{id}', [CashAccountController::class, 'update'])->middleware('permission:cash-accounts.accounts.update');
+                    Route::post('/{id}/activate', [CashAccountController::class, 'activate'])->middleware('permission:cash-accounts.accounts.activate');
+                    Route::post('/{id}/restrict', [CashAccountController::class, 'restrict'])->middleware('permission:cash-accounts.accounts.restrict');
+                    Route::post('/{id}/unrestrict', [CashAccountController::class, 'unrestrict'])->middleware('permission:cash-accounts.accounts.activate');
+                    Route::post('/{id}/deactivate', [CashAccountController::class, 'deactivate'])->middleware('permission:cash-accounts.accounts.deactivate');
+                    Route::post('/{id}/reactivate', [CashAccountController::class, 'reactivate'])->middleware('permission:cash-accounts.accounts.reactivate');
+                    Route::get('/{id}/capabilities', [CashAccountController::class, 'show'])->middleware('permission:cash-accounts.accounts.view');
+                    Route::patch('/{id}/capabilities', [CashAccountController::class, 'capabilities'])->middleware('permission:cash-accounts.capabilities.manage');
+                    Route::get('/{id}/custodians', [CashAccountController::class, 'custodians'])->middleware('permission:cash-accounts.custodians.view');
+                    Route::post('/{id}/custodians', [CashAccountController::class, 'assignCustodian'])->middleware('permission:cash-accounts.custodians.manage');
+                    Route::post('/{id}/custodians/{custodianId}/end', [CashAccountController::class, 'endCustodian'])->middleware('permission:cash-accounts.custodians.manage');
+                    Route::get('/{id}/balance', [CashAccountController::class, 'balance'])->middleware('permission:cash-accounts.balance.view');
+                    Route::get('/{id}/movements', [CashAccountController::class, 'movements'])->middleware('permission:cash-accounts.history');
+                    Route::get('/{id}/history', [CashAccountController::class, 'history'])->middleware('permission:cash-accounts.history');
+                });
+
+                Route::prefix('master-registries')->group(function () {
+                    Route::get('/', [MasterRegistryController::class, 'summary'])->middleware('permission:master-registries.view');
+                    Route::get('/lookups', [MasterRegistryController::class, 'lookups'])->middleware('permission:master-registries.search');
+
+                    Route::get('/business-partners', [BusinessPartnerController::class, 'index'])->middleware('permission:master-registries.business-partners.view');
+                    Route::post('/business-partners', [BusinessPartnerController::class, 'store'])->middleware('permission:master-registries.business-partners.create');
+                    Route::post('/business-partners/quick-create', [BusinessPartnerController::class, 'quickCreate'])->middleware('permission:master-registries.business-partners.create');
+                    Route::get('/business-partners/{businessPartner}', [BusinessPartnerController::class, 'show'])->middleware('permission:master-registries.business-partners.view');
+                    Route::patch('/business-partners/{businessPartner}', [BusinessPartnerController::class, 'update'])->middleware('permission:master-registries.business-partners.update');
+                    Route::post('/business-partners/{businessPartner}/deactivate', [BusinessPartnerController::class, 'deactivate'])->middleware('permission:master-registries.business-partners.deactivate');
+                    Route::post('/business-partners/{businessPartner}/reactivate', [BusinessPartnerController::class, 'reactivate'])->middleware('permission:master-registries.business-partners.reactivate');
+                    Route::get('/business-partners/{businessPartner}/history', [BusinessPartnerController::class, 'history'])->middleware('permission:master-registries.history');
+                    Route::post('/business-partners/{businessPartner}/contacts', [BusinessPartnerController::class, 'contact'])->middleware('permission:master-registries.business-partners.update');
+                    Route::post('/business-partners/{businessPartner}/addresses', [BusinessPartnerController::class, 'address'])->middleware('permission:master-registries.business-partners.update');
+
+                    Route::get('/products-services', [ProductServiceController::class, 'index'])->middleware('permission:master-registries.items.view');
+                    Route::post('/products-services', [ProductServiceController::class, 'store'])->middleware('permission:master-registries.items.create');
+                    Route::post('/products-services/quick-create', [ProductServiceController::class, 'quickCreate'])->middleware('permission:master-registries.items.create');
+                    Route::get('/products-services/{productService}', [ProductServiceController::class, 'show'])->middleware('permission:master-registries.items.view');
+                    Route::patch('/products-services/{productService}', [ProductServiceController::class, 'update'])->middleware('permission:master-registries.items.update');
+                    Route::post('/products-services/{productService}/deactivate', [ProductServiceController::class, 'deactivate'])->middleware('permission:master-registries.items.deactivate');
+                    Route::post('/products-services/{productService}/reactivate', [ProductServiceController::class, 'reactivate'])->middleware('permission:master-registries.items.reactivate');
+                    Route::get('/products-services/{productService}/history', [ProductServiceController::class, 'history'])->middleware('permission:master-registries.history');
+
+                    Route::get('/categories', [CategoryController::class, 'index'])->middleware('permission:master-registries.categories.view');
+                    Route::post('/categories', [CategoryController::class, 'store'])->middleware('permission:master-registries.categories.create');
+                    Route::get('/categories/{category}', [CategoryController::class, 'show'])->middleware('permission:master-registries.categories.view');
+                    Route::patch('/categories/{category}', [CategoryController::class, 'update'])->middleware('permission:master-registries.categories.update');
+                    Route::post('/categories/{category}/deactivate', [CategoryController::class, 'deactivate'])->middleware('permission:master-registries.categories.deactivate');
+                    Route::post('/categories/{category}/reactivate', [CategoryController::class, 'reactivate'])->middleware('permission:master-registries.categories.reactivate');
+                    Route::get('/categories/{category}/history', [CategoryController::class, 'history'])->middleware('permission:master-registries.history');
+
+                    Route::get('/units', [UnitController::class, 'index'])->middleware('permission:master-registries.units.view');
+                    Route::post('/units', [UnitController::class, 'store'])->middleware('permission:master-registries.units.create');
+                    Route::get('/units/{unit}', [UnitController::class, 'show'])->middleware('permission:master-registries.units.view');
+                    Route::patch('/units/{unit}', [UnitController::class, 'update'])->middleware('permission:master-registries.units.update');
+                    Route::post('/units/{unit}/deactivate', [UnitController::class, 'deactivate'])->middleware('permission:master-registries.units.deactivate');
+                    Route::post('/units/{unit}/reactivate', [UnitController::class, 'reactivate'])->middleware('permission:master-registries.units.reactivate');
+                    Route::get('/units/{unit}/history', [UnitController::class, 'history'])->middleware('permission:master-registries.history');
+
+                    Route::get('/reference-lookups', [ReferenceRegistryController::class, 'lookups'])->middleware('permission:master-registries.search');
+
+                    Route::prefix('currencies')->group(function () {
+                        Route::get('/', [ReferenceRegistryController::class, 'currencies'])->middleware('permission:master-registries.currencies.view');
+                        Route::post('/', [ReferenceRegistryController::class, 'storeCurrency'])->middleware('permission:master-registries.currencies.create');
+                        Route::get('/{id}', [ReferenceRegistryController::class, 'showCurrency'])->middleware('permission:master-registries.currencies.view');
+                        Route::patch('/{id}', [ReferenceRegistryController::class, 'updateCurrency'])->middleware('permission:master-registries.currencies.update');
+                        Route::post('/{id}/deactivate', [ReferenceRegistryController::class, 'deactivateCurrency'])->middleware('permission:master-registries.currencies.deactivate');
+                        Route::post('/{id}/reactivate', [ReferenceRegistryController::class, 'reactivateCurrency'])->middleware('permission:master-registries.currencies.reactivate');
+                        Route::get('/{id}/history', [ReferenceRegistryController::class, 'historyCurrency'])->middleware('permission:master-registries.history');
+                    });
+                    Route::prefix('payment-methods')->group(function () {
+                        Route::get('/', [ReferenceRegistryController::class, 'paymentMethods'])->middleware('permission:master-registries.payment-methods.view');
+                        Route::post('/', [ReferenceRegistryController::class, 'storePaymentMethod'])->middleware('permission:master-registries.payment-methods.create');
+                        Route::get('/{id}', [ReferenceRegistryController::class, 'showPaymentMethod'])->middleware('permission:master-registries.payment-methods.view');
+                        Route::patch('/{id}', [ReferenceRegistryController::class, 'updatePaymentMethod'])->middleware('permission:master-registries.payment-methods.update');
+                        Route::post('/{id}/deactivate', [ReferenceRegistryController::class, 'deactivatePaymentMethod'])->middleware('permission:master-registries.payment-methods.deactivate');
+                        Route::post('/{id}/reactivate', [ReferenceRegistryController::class, 'reactivatePaymentMethod'])->middleware('permission:master-registries.payment-methods.reactivate');
+                        Route::get('/{id}/history', [ReferenceRegistryController::class, 'historyPaymentMethod'])->middleware('permission:master-registries.history');
+                    });
+                    Route::prefix('payment-terms')->group(function () {
+                        Route::get('/', [ReferenceRegistryController::class, 'paymentTerms'])->middleware('permission:master-registries.payment-terms.view');
+                        Route::post('/', [ReferenceRegistryController::class, 'storePaymentTerm'])->middleware('permission:master-registries.payment-terms.create');
+                        Route::get('/{id}', [ReferenceRegistryController::class, 'showPaymentTerm'])->middleware('permission:master-registries.payment-terms.view');
+                        Route::patch('/{id}', [ReferenceRegistryController::class, 'updatePaymentTerm'])->middleware('permission:master-registries.payment-terms.update');
+                        Route::post('/{id}/deactivate', [ReferenceRegistryController::class, 'deactivatePaymentTerm'])->middleware('permission:master-registries.payment-terms.deactivate');
+                        Route::post('/{id}/reactivate', [ReferenceRegistryController::class, 'reactivatePaymentTerm'])->middleware('permission:master-registries.payment-terms.reactivate');
+                        Route::get('/{id}/history', [ReferenceRegistryController::class, 'historyPaymentTerm'])->middleware('permission:master-registries.history');
+                    });
+                    Route::prefix('tax-codes')->group(function () {
+                        Route::get('/', [ReferenceRegistryController::class, 'taxCodes'])->middleware('permission:master-registries.tax-codes.view');
+                        Route::post('/', [ReferenceRegistryController::class, 'storeTaxCode'])->middleware('permission:master-registries.tax-codes.create');
+                        Route::get('/{id}', [ReferenceRegistryController::class, 'showTaxCode'])->middleware('permission:master-registries.tax-codes.view');
+                        Route::patch('/{id}', [ReferenceRegistryController::class, 'updateTaxCode'])->middleware('permission:master-registries.tax-codes.update');
+                        Route::post('/{id}/deactivate', [ReferenceRegistryController::class, 'deactivateTaxCode'])->middleware('permission:master-registries.tax-codes.deactivate');
+                        Route::post('/{id}/reactivate', [ReferenceRegistryController::class, 'reactivateTaxCode'])->middleware('permission:master-registries.tax-codes.reactivate');
+                        Route::get('/{id}/history', [ReferenceRegistryController::class, 'historyTaxCode'])->middleware('permission:master-registries.history');
+                    });
+                    Route::prefix('account-titles')->group(function () {
+                        Route::get('/', [ReferenceRegistryController::class, 'accountTitles'])->middleware('permission:master-registries.account-titles.view');
+                        Route::post('/', [ReferenceRegistryController::class, 'storeAccountTitle'])->middleware('permission:master-registries.account-titles.create');
+                        Route::get('/{id}', [ReferenceRegistryController::class, 'showAccountTitle'])->middleware('permission:master-registries.account-titles.view');
+                        Route::patch('/{id}', [ReferenceRegistryController::class, 'updateAccountTitle'])->middleware('permission:master-registries.account-titles.update');
+                        Route::post('/{id}/deactivate', [ReferenceRegistryController::class, 'deactivateAccountTitle'])->middleware('permission:master-registries.account-titles.deactivate');
+                        Route::post('/{id}/reactivate', [ReferenceRegistryController::class, 'reactivateAccountTitle'])->middleware('permission:master-registries.account-titles.reactivate');
+                        Route::get('/{id}/history', [ReferenceRegistryController::class, 'historyAccountTitle'])->middleware('permission:master-registries.history');
+                    });
+                    Route::prefix('expense-categories')->group(function () {
+                        Route::get('/', [ReferenceRegistryController::class, 'expenseCategories'])->middleware('permission:master-registries.expense-categories.view');
+                        Route::post('/', [ReferenceRegistryController::class, 'storeExpenseCategory'])->middleware('permission:master-registries.expense-categories.create');
+                        Route::get('/{id}', [ReferenceRegistryController::class, 'showExpenseCategory'])->middleware('permission:master-registries.expense-categories.view');
+                        Route::patch('/{id}', [ReferenceRegistryController::class, 'updateExpenseCategory'])->middleware('permission:master-registries.expense-categories.update');
+                        Route::post('/{id}/deactivate', [ReferenceRegistryController::class, 'deactivateExpenseCategory'])->middleware('permission:master-registries.expense-categories.deactivate');
+                        Route::post('/{id}/reactivate', [ReferenceRegistryController::class, 'reactivateExpenseCategory'])->middleware('permission:master-registries.expense-categories.reactivate');
+                        Route::get('/{id}/history', [ReferenceRegistryController::class, 'historyExpenseCategory'])->middleware('permission:master-registries.history');
+                    });
+                    Route::prefix('branches')->group(function () {
+                        Route::get('/', [ReferenceRegistryController::class, 'branches'])->middleware('permission:master-registries.branches.view');
+                        Route::post('/', [ReferenceRegistryController::class, 'storeBranch'])->middleware('permission:master-registries.branches.create');
+                        Route::get('/{id}', [ReferenceRegistryController::class, 'showBranch'])->middleware('permission:master-registries.branches.view');
+                        Route::patch('/{id}', [ReferenceRegistryController::class, 'updateBranch'])->middleware('permission:master-registries.branches.update');
+                        Route::post('/{id}/deactivate', [ReferenceRegistryController::class, 'deactivateBranch'])->middleware('permission:master-registries.branches.deactivate');
+                        Route::post('/{id}/reactivate', [ReferenceRegistryController::class, 'reactivateBranch'])->middleware('permission:master-registries.branches.reactivate');
+                        Route::get('/{id}/history', [ReferenceRegistryController::class, 'historyBranch'])->middleware('permission:master-registries.history');
+                    });
+                    Route::prefix('warehouses')->group(function () {
+                        Route::get('/', [ReferenceRegistryController::class, 'warehouses'])->middleware('permission:master-registries.warehouses.view');
+                        Route::post('/', [ReferenceRegistryController::class, 'storeWarehouse'])->middleware('permission:master-registries.warehouses.create');
+                        Route::get('/{id}', [ReferenceRegistryController::class, 'showWarehouse'])->middleware('permission:master-registries.warehouses.view');
+                        Route::patch('/{id}', [ReferenceRegistryController::class, 'updateWarehouse'])->middleware('permission:master-registries.warehouses.update');
+                        Route::post('/{id}/deactivate', [ReferenceRegistryController::class, 'deactivateWarehouse'])->middleware('permission:master-registries.warehouses.deactivate');
+                        Route::post('/{id}/reactivate', [ReferenceRegistryController::class, 'reactivateWarehouse'])->middleware('permission:master-registries.warehouses.reactivate');
+                        Route::get('/{id}/history', [ReferenceRegistryController::class, 'historyWarehouse'])->middleware('permission:master-registries.history');
+                    });
+                    Route::prefix('stock-locations')->group(function () {
+                        Route::get('/', [ReferenceRegistryController::class, 'stockLocations'])->middleware('permission:master-registries.stock-locations.view');
+                        Route::post('/', [ReferenceRegistryController::class, 'storeStockLocation'])->middleware('permission:master-registries.stock-locations.create');
+                        Route::get('/{id}', [ReferenceRegistryController::class, 'showStockLocation'])->middleware('permission:master-registries.stock-locations.view');
+                        Route::patch('/{id}', [ReferenceRegistryController::class, 'updateStockLocation'])->middleware('permission:master-registries.stock-locations.update');
+                        Route::post('/{id}/deactivate', [ReferenceRegistryController::class, 'deactivateStockLocation'])->middleware('permission:master-registries.stock-locations.deactivate');
+                        Route::post('/{id}/reactivate', [ReferenceRegistryController::class, 'reactivateStockLocation'])->middleware('permission:master-registries.stock-locations.reactivate');
+                        Route::get('/{id}/history', [ReferenceRegistryController::class, 'historyStockLocation'])->middleware('permission:master-registries.history');
+                    });
+                    Route::prefix('reason-codes')->group(function () {
+                        Route::get('/', [ReferenceRegistryController::class, 'reasonCodes'])->middleware('permission:master-registries.reason-codes.view');
+                        Route::post('/', [ReferenceRegistryController::class, 'storeReasonCode'])->middleware('permission:master-registries.reason-codes.create');
+                        Route::get('/{id}', [ReferenceRegistryController::class, 'showReasonCode'])->middleware('permission:master-registries.reason-codes.view');
+                        Route::patch('/{id}', [ReferenceRegistryController::class, 'updateReasonCode'])->middleware('permission:master-registries.reason-codes.update');
+                        Route::post('/{id}/deactivate', [ReferenceRegistryController::class, 'deactivateReasonCode'])->middleware('permission:master-registries.reason-codes.deactivate');
+                        Route::post('/{id}/reactivate', [ReferenceRegistryController::class, 'reactivateReasonCode'])->middleware('permission:master-registries.reason-codes.reactivate');
+                        Route::get('/{id}/history', [ReferenceRegistryController::class, 'historyReasonCode'])->middleware('permission:master-registries.history');
+                    });
+                });
+            });
+        });
+    });
+});
