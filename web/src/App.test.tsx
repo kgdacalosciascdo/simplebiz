@@ -16,5 +16,7 @@ describe('SimpleBIZ application foundation', () => {
     render(<MemoryRouter initialEntries={['/preview']}><App /></MemoryRouter>)
     expect(screen.getByRole('heading', { name: 'Dashboard' })).toBeInTheDocument()
     expect(screen.getByText(/Needs Attention/)).toBeInTheDocument()
+    expect(screen.getByText(/Profit and loss is owned by the future/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open navigation' })).toBeInTheDocument()
   })
 })

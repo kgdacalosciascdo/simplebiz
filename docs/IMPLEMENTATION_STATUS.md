@@ -284,3 +284,12 @@ The documented MDS-700 reconciliation scope is implemented for the controlled ma
 - Added deployment-only preparation for the existing Laravel backend and React frontend: `backend/Dockerfile`, the backend Nginx/startup files, root `render.yaml`, root secret/backup ignore rules, environment-driven CORS, proxy HTTPS handling, production API URL enforcement, and environment-driven private attachment disks.
 - Added the focused [Render staging deployment guide](RENDER_STAGING_DEPLOYMENT.md). This is staging readiness only and does not mark SimpleBIZ production-ready.
 - No SimpleBIZ business module, workflow, permission, accounting rule, database entity, or user-facing business capability was changed for deployment preparation.
+
+## UI-01 - Reference-faithful dynamic frontend refinement
+
+- Inspected the six supplied workspace references in `ui/`: Dashboard, Sales, Collections & Receipts, Purchases & Payables, Master Registries, and Settings & Administration. No dedicated Cash Accounts, authentication, setup, detail-page, or mobile reference screenshots were present in the repository.
+- Refined the shared frontend shell with the reference-aligned blue/sky workspace surfaces, persistent desktop sidebar, responsive mobile drawer, active navigation, company context, global-search entry point, notification/help affordances, profile menu, breadcrumb, focus treatment, and reduced-motion support.
+- Added lightweight shared frontend primitives for buttons, cards, badges, page headers, loading panels, empty states, and error panels. Design tokens are centralized in `web/src/index.css`.
+- Refined the Dashboard hierarchy around action cards, Needs Attention, Profit & Loss Snapshot, Business Snapshot, Recent Activity, Records & Ledgers, and Action Center. Dashboard Cash Account content reads the existing summary and needs-attention APIs; unavailable Sales, Collections, Purchases, Payments, Inventory, Expenses, Profit & Loss, and activity projections remain explicitly deferred with no fabricated values.
+- Preserved the existing API client, routes, business workflows, permissions, accounting behavior, database schema, Render configuration, and Cash Accounts feature behavior. No dependency, migration, backend, or business module was added.
+- Added regression assertions for the deferred dashboard state and mobile navigation entry point. Frontend validation: 10 tests passed across 4 files, ESLint passed, TypeScript/Vite production build passed, and `npm ci` compatibility remains to be verified after the final lockfile check.

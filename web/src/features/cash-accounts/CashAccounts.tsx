@@ -15,10 +15,10 @@ type OpeningBalance = { id: string; cash_account_id: string; cash_account?: Look
 type Lookups = { types: AccountType[]; account_titles: Lookup[]; currencies: Lookup[]; branches: Lookup[]; custodians: Lookup[]; opening_reason_codes: Lookup[] }
 type Summary = { account_count: number; active_account_count: number; restricted_account_count: number; draft_account_count: number; position_by_currency: { currency_code: string; posted_balance: string }[]; as_of: string }
 
-const panel = 'rounded-xl border-2 border-[#148cd0] bg-[#edf4f8] p-4 shadow-sm'
+const panel = 'sb-panel'
 const input = 'mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-[#168fc6] focus:ring-2 focus:ring-[#168fc6]/20'
-const button = 'rounded-lg bg-[#168fc6] px-4 py-2 text-sm font-semibold text-white hover:bg-[#147dae] disabled:opacity-60'
-const secondary = 'rounded-lg border border-[#2b78bd] bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60'
+const button = 'sb-button'
+const secondary = 'sb-button-secondary'
 
 function idempotencyKey() { return `${Date.now()}-${window.crypto.randomUUID()}` }
 function message(error: unknown) { return error instanceof Error ? error.message : 'The request could not be completed.' }

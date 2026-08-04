@@ -24,7 +24,7 @@ type Category = { id: string; code: string; name: string; applicability: string;
 type Unit = { id: string; code: string; name: string; symbol?: string; unit_type: string; decimal_precision: number; allows_fractional: boolean; status: RegistryStatus; version: number }
 
 const key = () => `${Date.now()}-${crypto.randomUUID()}`
-const panel = 'rounded-xl border-2 border-[#148cd0] bg-[#edf4f8] p-4 shadow-sm'
+const panel = 'sb-panel'
 const input = 'mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-[#168fc6] focus:ring-2 focus:ring-[#168fc6]/20'
 function ErrorBox({ error }: { error: string }) { return error ? <div role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</div> : null }
 function Status({ status }: { status: string }) { return <span className={`rounded-full px-2 py-1 text-[11px] font-semibold uppercase ${status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>{status}</span> }
