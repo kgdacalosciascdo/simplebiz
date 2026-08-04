@@ -25,6 +25,8 @@ class Company extends Model
         'fiscal_year_start_month',
         'setup_status',
         'setup_completed_at',
+        'setup_registration_ip',
+        'setup_registration_device_id',
         'default_currency_id',
         'default_branch_id',
         'default_payment_term_id',

@@ -295,3 +295,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .sb-sidebar-collapsed .sb-nav-more { display: flex; }
   .sb-sidebar-collapsed .sb-logout > span { display: inline; }
 }
+
+/* The mobile drawer trigger must not appear alongside the desktop rail toggle. */
+@media (min-width: 1024px) {
+  .sb-topbar > div:first-child > .sb-icon-button { display: none !important; }
+}

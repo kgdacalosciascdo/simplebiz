@@ -50,3 +50,15 @@ export function saveCompanyId(companyId: number | string) {
 export function hasToken() {
   return Boolean(window.localStorage.getItem('simplebiz_token'))
 }
+
+export function getSetupDeviceId() {
+  const key = 'simplebiz_setup_device'
+  const existing = window.localStorage.getItem(key)
+  if (existing) return existing
+
+  const generated = typeof window.crypto?.randomUUID === 'function'
+    ? window.crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  window.localStorage.setItem(key, generated)
+  return generated
+}

@@ -21,9 +21,9 @@ class CompanySetupController extends Controller
 {
     public function __construct(private readonly AuditService $audit, private readonly IdempotencyService $idempotency) {}
 
-    public function status()
+    public function status(Request $request)
     {
-        $company = Company::query()->orderBy('id')->first();
+        $company = $this->registeredCompany($request);
 
         return ApiResponse::success([
             'required' => $company === null,
@@ -49,12 +49,14 @@ class CompanySetupController extends Controller
         ]);
         $input['email'] = strtolower($input['email']);
 
-        return $this->idempotency->run($request, 'core.setup.bootstrap', null, function () use ($request, $input) {
-            [$user, $company] = DB::transaction(function () use ($request, $input) {
+        $registration = $this->registrationContext($request);
+
+        return $this->idempotency->run($request, 'core.setup.bootstrap', null, function () use ($request, $input, $registration) {
+            [$user, $company] = DB::transaction(function () use ($request, $input, $registration) {
                 if (DB::getDriverName() === 'pgsql') {
                     DB::select('select pg_advisory_xact_lock(?)', [4815162342]);
                 }
-                if (Company::query()->lockForUpdate()->first()) {
+                if ($this->registeredCompany($request, true)) {
                     return [null, null];
                 }
                 if (User::where('email', $input['email'])->exists()) {
@@ -75,6 +77,8 @@ class CompanySetupController extends Controller
                     'currency' => strtoupper($input['currency']), 'timezone' => $input['timezone'],
                     'locale' => $input['locale'], 'fiscal_year_start_month' => $input['fiscal_year_start_month'] ?? null,
                     'status' => 'active', 'setup_status' => 'completed', 'setup_completed_at' => now(),
+                    'setup_registration_ip' => $registration['ip'],
+                    'setup_registration_device_id' => $registration['device_id'],
                     'created_by' => $user->id,
                 ]);
                 $user->companies()->attach($company->id, ['status' => 'active', 'is_owner' => true, 'last_active_at' => now()]);
@@ -165,5 +169,46 @@ class CompanySetupController extends Controller
                 'token' => $user->createToken('simplebiz-web', ['*'], now()->addHours(8))->plainTextToken,
             ], 201);
         });
+    }
+
+    /** @return array{ip: ?string, device_id: ?string} */
+    private function registrationContext(Request $request): array
+    {
+        $deviceId = trim((string) $request->header('X-SimpleBIZ-Device'));
+
+        if ($deviceId === '' || strlen($deviceId) > 128 || ! preg_match('/^[A-Za-z0-9._:-]+$/', $deviceId)) {
+            $deviceId = null;
+        }
+
+        return [
+            'ip' => $request->ip(),
+            'device_id' => $deviceId,
+        ];
+    }
+
+    private function registeredCompany(Request $request, bool $lock = false): ?Company
+    {
+        $registration = $this->registrationContext($request);
+
+        if (! $registration['ip'] && ! $registration['device_id']) {
+            return null;
+        }
+
+        $query = Company::query()->where(function ($query) use ($registration) {
+            if ($registration['ip']) {
+                $query->where('setup_registration_ip', $registration['ip']);
+            }
+
+            if ($registration['device_id']) {
+                $method = $registration['ip'] ? 'orWhere' : 'where';
+                $query->{$method}('setup_registration_device_id', $registration['device_id']);
+            }
+        })->orderBy('id');
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        return $query->first();
     }
 }

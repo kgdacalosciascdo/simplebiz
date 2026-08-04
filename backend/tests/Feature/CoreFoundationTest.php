@@ -32,6 +32,46 @@ class CoreFoundationTest extends TestCase
         $second->assertStatus(409);
     }
 
+    public function test_setup_allows_one_company_per_ip_or_device(): void
+    {
+        $first = $this->withHeaders([
+            'Idempotency-Key' => 'setup-origin-first',
+            'X-SimpleBIZ-Device' => 'device-first',
+        ])->postJson('/api/v1/setup/bootstrap', $this->setupPayload([
+            'email' => 'first-owner@example.com',
+            'company_name' => 'First Origin Company',
+        ]));
+        $first->assertCreated();
+
+        $sameIp = $this->withHeaders([
+            'Idempotency-Key' => 'setup-origin-same-ip',
+            'X-SimpleBIZ-Device' => 'device-second',
+        ])->postJson('/api/v1/setup/bootstrap', $this->setupPayload([
+            'email' => 'same-ip-owner@example.com',
+            'company_name' => 'Same IP Company',
+        ]));
+        $sameIp->assertStatus(409);
+
+        $sameDevice = $this->withServerVariables(['REMOTE_ADDR' => '10.10.10.11'])->withHeaders([
+            'Idempotency-Key' => 'setup-origin-same-device',
+            'X-SimpleBIZ-Device' => 'device-first',
+        ])->postJson('/api/v1/setup/bootstrap', $this->setupPayload([
+            'email' => 'same-device-owner@example.com',
+            'company_name' => 'Same Device Company',
+        ]));
+        $sameDevice->assertStatus(409);
+
+        $differentOrigin = $this->withServerVariables(['REMOTE_ADDR' => '10.10.10.12'])->withHeaders([
+            'Idempotency-Key' => 'setup-origin-different',
+            'X-SimpleBIZ-Device' => 'device-different',
+        ])->postJson('/api/v1/setup/bootstrap', $this->setupPayload([
+            'email' => 'different-owner@example.com',
+            'company_name' => 'Different Origin Company',
+        ]));
+        $differentOrigin->assertCreated();
+        $this->assertDatabaseCount('companies', 2);
+    }
+
     public function test_idempotent_setup_replays_a_safe_result_without_a_token(): void
     {
         $payload = $this->setupPayload();
@@ -95,8 +135,8 @@ class CoreFoundationTest extends TestCase
         $this->postJson('/api/v1/auth/login', [])->assertStatus(422)->assertJsonStructure(['message', 'errors']);
     }
 
-    private function setupPayload(): array
+    private function setupPayload(array $overrides = []): array
     {
-        return ['name' => 'Business Owner', 'email' => 'owner@example.com', 'password' => 'password-123', 'password_confirmation' => 'password-123', 'company_name' => 'Acme Demo', 'currency' => 'PHP', 'timezone' => 'Asia/Manila', 'locale' => 'en'];
+        return array_merge(['name' => 'Business Owner', 'email' => 'owner@example.com', 'password' => 'password-123', 'password_confirmation' => 'password-123', 'company_name' => 'Acme Demo', 'currency' => 'PHP', 'timezone' => 'Asia/Manila', 'locale' => 'en'], $overrides);
     }
 }
