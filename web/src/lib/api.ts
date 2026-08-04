@@ -1,5 +1,7 @@
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim().replace(/\/+$/, '')
-const API_URL = configuredApiUrl || (import.meta.env.DEV ? 'http://localhost:8000/api/v1' : '')
+// The local XAMPP document root serves Laravel from backend/public. Deployments
+// must provide VITE_API_URL explicitly, so this fallback only affects local dev.
+const API_URL = configuredApiUrl || (import.meta.env.DEV ? 'http://localhost/simplebiz/backend/public/api/v1' : '')
 
 if (!API_URL) {
   throw new Error('VITE_API_URL must be configured for a production build.')

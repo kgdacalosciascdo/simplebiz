@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\ProductServiceController;
 use App\Http\Controllers\Api\ReconciliationAdjustmentController;
 use App\Http\Controllers\Api\ReconciliationController;
 use App\Http\Controllers\Api\ReferenceRegistryController;
+use App\Http\Controllers\Api\SalesController;
 use App\Http\Controllers\Api\StatementImportController;
 use App\Http\Controllers\Api\UnitController;
 use App\Http\Controllers\Api\UserAccessController;
@@ -39,6 +40,31 @@ Route::prefix('v1')->group(function () {
 
             Route::middleware('company.context')->group(function () {
                 Route::get('/context/company', [CompanyController::class, 'current']);
+                Route::prefix('sales')->group(function () {
+                    Route::get('/lookups', [SalesController::class, 'lookups'])->middleware('permission:sales.view');
+                    Route::get('/summary', [SalesController::class, 'summary'])->middleware('permission:sales.view');
+                    Route::get('/', [SalesController::class, 'index'])->middleware('permission:sales.view');
+                    Route::post('/', [SalesController::class, 'store'])->middleware('permission:sales.create');
+                    Route::get('/{id}', [SalesController::class, 'show'])->middleware('permission:sales.view');
+                    Route::patch('/{id}', [SalesController::class, 'update'])->middleware('permission:sales.update');
+                    Route::post('/{id}/submit', [SalesController::class, 'action'])->defaults('action', 'submit')->middleware('permission:sales.submit');
+                    Route::post('/{id}/review', [SalesController::class, 'action'])->defaults('action', 'review')->middleware('permission:sales.review');
+                    Route::post('/{id}/return', [SalesController::class, 'action'])->defaults('action', 'return')->middleware('permission:sales.review');
+                    Route::post('/{id}/approve', [SalesController::class, 'action'])->defaults('action', 'approve')->middleware('permission:sales.approve');
+                    Route::post('/{id}/post', [SalesController::class, 'action'])->defaults('action', 'post')->middleware('permission:sales.post');
+                    Route::post('/{id}/cancel', [SalesController::class, 'action'])->defaults('action', 'cancel')->middleware('permission:sales.cancel');
+                    Route::get('/{id}/history', [SalesController::class, 'history'])->middleware('permission:sales.history');
+                });
+                Route::prefix('receivables')->group(function () {
+                    Route::get('/', [SalesController::class, 'receivables'])->middleware('permission:sales.receivables.view');
+                    Route::get('/aging', [SalesController::class, 'aging'])->middleware('permission:sales.receivables.aging.view');
+                    Route::get('/{id}', [SalesController::class, 'receivable'])->middleware('permission:sales.receivables.view');
+                });
+                Route::prefix('billing-statements')->group(function () {
+                    Route::get('/', [SalesController::class, 'statements'])->middleware('permission:sales.billing-statements.view');
+                    Route::post('/', [SalesController::class, 'storeStatement'])->middleware('permission:sales.billing-statements.create');
+                    Route::get('/{id}', [SalesController::class, 'statement'])->middleware('permission:sales.billing-statements.view');
+                });
                 Route::get('/settings/company', [CompanyProfileController::class, 'show'])->middleware('permission:settings.company.view');
                 Route::patch('/settings/company', [CompanyProfileController::class, 'update'])->middleware('permission:settings.company.edit');
                 Route::get('/settings/users', [UserAccessController::class, 'index'])->middleware('permission:settings.users.view');

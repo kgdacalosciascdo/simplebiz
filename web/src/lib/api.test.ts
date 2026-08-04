@@ -17,7 +17,7 @@ describe('SimpleBIZ API client', () => {
     saveToken('token'); saveCompanyId(7)
     const fetchMock = vi.spyOn(window, 'fetch').mockResolvedValue(new Response(JSON.stringify({ data: { ok: true } }), { status: 200 }))
     await apiFetch('/context/company')
-    expect(fetchMock).toHaveBeenCalledWith('http://localhost:8000/api/v1/context/company', expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer token', 'X-Company-ID': '7' }) }))
+    expect(fetchMock).toHaveBeenCalledWith('http://localhost/simplebiz/backend/public/api/v1/context/company', expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer token', 'X-Company-ID': '7' }) }))
   })
 
   it('exposes safe API errors to callers', async () => {

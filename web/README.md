@@ -1,6 +1,18 @@
 # React + TypeScript + Vite
 
+## SimpleBIZ frontend notes
+
+The authenticated frontend reads the existing Laravel API. To inspect the dashboard presentation without a session, run the Vite app and open `/preview`. This route uses deterministic, read-only Cash Account fixtures and displays a visible `Demo Data` badge.
+
+For an explicit staging/demo presentation, set `VITE_DEMO_MODE=true` in the frontend environment. Live API data is preferred whenever a non-empty response is available; live request errors remain visible and are not silently replaced by fixtures.
+
+The dashboard uses Lucide icons, Recharts, TanStack Query, and a reusable TanStack Table wrapper. The desktop sidebar collapse preference is persisted in `simplebiz.sidebar.collapsed`; mobile navigation remains a separate drawer interaction.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+
+## Phase 4A Sales workspace
+
+The authenticated `/sales` route now reads the Laravel Sales & Receivables APIs. It provides server-backed Sales history, credit-sale draft preparation, receivables and aging reads, billing statement generation, and dependency-aware detail states. Cash Sales, stock-managed posting, customer receipts, inventory effects, and payment applications remain visibly deferred to their owning modules.
 
 Currently, two official plugins are available:
 
