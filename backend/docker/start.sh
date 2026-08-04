@@ -2,7 +2,10 @@
 set -eu
 
 PORT_VALUE="${PORT:-10000}"
-sed "s/__PORT__/${PORT_VALUE}/g" /etc/nginx/render-nginx.conf.template > /tmp/nginx.conf
+export PORT="${PORT_VALUE}"
+envsubst '${PORT}' \
+    < /etc/nginx/render-nginx.conf.template \
+    > /tmp/nginx.conf
 
 mkdir -p storage/app/private storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache
 chown -R www-data:www-data storage bootstrap/cache

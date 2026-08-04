@@ -88,9 +88,22 @@ The documents in `docs/` are the final, approved, authoritative implementation b
 - Added `Cash Counts & Variances` and `Custodian Handovers` workspace modes to Cash Accounts, including count scheduling, denomination entry, evidence upload, confirmations, review/disposition actions, reports/needs-attention views, and handover controls.
 - Added focused Phase 3C-A coverage for cut-off snapshots, denomination totals, balanced count completion, variance adjustment posting/reversal, and handover completion. Statement import, statement-line matching, reconciliation, rematching, and completion locking remain outside this phase.
 
+### Phase 3C-B - Statement Import, Matching, Reconciliation, Locking, and Reopening
+
+- Added forward-only migrations `2026_08_04_000016_create_statement_reconciliation_foundation` and `2026_08_04_000017_seed_statement_reconciliation_catalog`.
+- Implemented company-scoped Statement Import Batches, private evidence links through the existing Attachment Service, manual normalized Statement Lines, validation summaries, opening/closing statement controls, period controls, duplicate file hashes, line fingerprints, and idempotent import boundaries.
+- MDS-700 does not name CSV, XLSX, OFX, QIF, MT940, CAMT, PDF, or another machine-readable format. This phase therefore supports controlled manual statement-line entry and secure raw statement evidence upload only. No invented parser, bank feed, provider login, OCR, or API synchronization was added.
+- Statement Lines use one explicit sign convention: positive signed amount is credit/inflow and negative signed amount is debit/outflow. Debit, credit, signed amount, currency, dates, period, duplicate fingerprint, and running-balance continuity are validated server-side. Statement data never creates a Cash Movement or edits a derived balance.
+- Implemented reconciliation population from posted `cash_movements` by inclusive `business_date` period. Draft/failed movements are excluded, original reversed movements are excluded while their posted reversal counter-effect remains eligible, and posting, clearing, and reconciliation statuses remain separate.
+- Implemented exact, tolerance/manual, one-statement-to-many-movements split, and many-statements-to-one-movement combined matching. Allocations are locked transactionally and cannot exceed either remaining side; non-zero tolerance requires the governed override permission and a reason. Match history is preserved on unmatching and rematching.
+- Implemented outstanding statement and Cash Movement items with governed classifications, owners, reasons, and no balance effect. Reconciliation adjustments use the existing Direct Cash In/Out source templates, accounting engine, evidence workflow, approval, posting, and reversal path; no manual journal or second ledger was introduced.
+- Implemented reconciliation preparation, submission, review, approval, atomic completion, completion records, population-fingerprint freshness checks, completion locking, reopening with a required reason, immutable completion history, and controlled post-reopen rematching.
+- Added statement-import, reconciliation, matching, outstanding-item, adjustment, evidence, history, and lifecycle APIs plus the Cash Accounts Statement Imports and Reconciliations workspaces. The frontend identifies statement lines and Cash Movements as separate sources and refreshes authoritative server state after actions.
+- Added focused Phase 3C-B backend coverage for manual normalization/evidence/duplicate detection, no balance effect on validation, exact matching, separate movement amount/status behavior, governed adjustment posting, completion locking, reopening history, and frontend coverage for the two new workspaces.
+
 ## PostgreSQL and migrations
 
-The backend uses `pgsql` through environment configuration. The local PostgreSQL migration status was verified, and the Phase 2B migrations `2026_08_03_000008_create_transaction_reference_registries` and `2026_08_03_000009_seed_reference_registries`, followed by Phase 3A migrations `2026_08_03_000010_create_cash_accounts_foundation` and `2026_08_03_000011_seed_cash_accounts_foundation`, Phase 3B migrations `2026_08_04_000012_create_cash_movement_documents` and `2026_08_04_000013_seed_cash_movement_catalog`, and Phase 3C-A migrations `2026_08_04_000014_create_cash_count_foundation` and `2026_08_04_000015_seed_cash_count_catalog`, were applied with the normal `php artisan migrate` command. No reset or destructive migration command was used.
+The backend uses `pgsql` through environment configuration. The local PostgreSQL migration status was verified, and the Phase 2B migrations `2026_08_03_000008_create_transaction_reference_registries` and `2026_08_03_000009_seed_reference_registries`, followed by Phase 3A migrations `2026_08_03_000010_create_cash_accounts_foundation` and `2026_08_03_000011_seed_cash_accounts_foundation`, Phase 3B migrations `2026_08_04_000012_create_cash_movement_documents` and `2026_08_04_000013_seed_cash_movement_catalog`, Phase 3C-A migrations `2026_08_04_000014_create_cash_count_foundation` and `2026_08_04_000015_seed_cash_count_catalog`, and Phase 3C-B migrations `2026_08_04_000016_create_statement_reconciliation_foundation`, `2026_08_04_000017_seed_statement_reconciliation_catalog`, and `2026_08_04_000018_seed_reconciliation_return_permission`, were applied with the normal `php artisan migrate` command. No reset or destructive migration command was used.
 
 Required local configuration is kept in `backend/.env` and must not be committed. New environments should copy `backend/.env.example`, set a valid PostgreSQL database and credentials, and run:
 
@@ -227,6 +240,10 @@ All administrative responses use the shared `data`/`meta` success envelope or `m
 - `/cash-accounts?mode=history`
 - `/cash-accounts?mode=counts`
 - `/cash-accounts?mode=handovers`
+- `/cash-accounts?mode=statements`
+- `/cash-accounts?mode=statement-import&id={id}`
+- `/cash-accounts?mode=reconciliations`
+- `/cash-accounts?mode=reconciliation&id={id}`
 - `/master-registries?registry=currencies`
 - `/master-registries?registry=payment-methods`
 - `/master-registries?registry=payment-terms`
@@ -237,17 +254,17 @@ All administrative responses use the shared `data`/`meta` success envelope or `m
 - `/master-registries?registry=warehouses`
 - `/master-registries?registry=stock-locations`
 - `/master-registries?registry=reason-codes`
-- Existing module routes remain visual foundations only; transaction posting is not implemented.
+- Statement imports, statement lines, reconciliation matches, outstanding items, adjustments, lifecycle actions, evidence, and history are available under `/api/v1/cash-accounts/statement-imports`, `/api/v1/cash-accounts/reconciliations`, `/api/v1/cash-accounts/reconciliation-matches`, and `/api/v1/cash-accounts/reconciliation-adjustments` with the Phase 3C-B permission catalog.
 
 ## Testing
 
-Backend coverage includes setup, idempotency replay safety, login, protected routes, company context, invitations, owner protection, permission enforcement, correlation IDs, validation envelopes, shared partner roles/history, duplicate handling, item integrity rules, dependency blocking, tenant isolation, Phase 2B reference registry rules, Phase 3A Cash Account/Opening Balance rules, Phase 3B governed movement/transfer rules, and Phase 3C-A cash-count/variance/handover rules. The full backend suite passes 26 tests, with 1 intentionally skipped PostgreSQL-only schema test, and 197 assertions. The focused Phase 3C-A suite passes 2 tests and 53 assertions. Frontend lint, TypeScript build, production Vite build, and the frontend suite pass with 3 test files and 8 tests.
+Backend coverage includes setup, idempotency replay safety, login, protected routes, company context, invitations, owner protection, permission enforcement, correlation IDs, validation envelopes, shared partner roles/history, duplicate handling, item integrity rules, dependency blocking, tenant isolation, Phase 2B reference registry rules, Phase 3A Cash Account/Opening Balance rules, Phase 3B governed movement/transfer rules, Phase 3C-A cash-count/variance/handover rules, and Phase 3C-B statement/reconciliation rules. The complete backend suite passes 29 tests, with 1 intentionally skipped PostgreSQL-only schema test, and 236 assertions. The focused Phase 3C-B suite passes 3 tests and 39 assertions. Frontend lint passes; the Vitest suite passes 10 tests across 4 files; TypeScript and the production Vite build pass.
 
 ## Deferred scope
 
 The following remain intentionally deferred: full custom roles, complete permission administration UI, subscription billing and entitlements, MFA, notification administration, numbering configuration, approval-policy builder, richer tax/accounting configuration, integrations, UOM conversions, merge/import tooling, and all transaction modules.
 
-Phase 3C-A intentionally does not implement statement import, statement-line normalization, exact/split/combined matching, reconciliation, completion locking, reopening, rematching, customer receipts, supplier payments, expenses, payment/disbursement source modules, cross-currency transfers, or source-module economic ownership. Phase 2A and Phase 2B also do not implement Sales, Collections, Inventory movements/balances, Purchases, Expenses, Payments, Reports, price lists, tax engines, bundles, or transaction-specific customer/supplier ledgers.
+Phase 3C-B intentionally does not implement named-but-unspecified machine-readable statement formats, live bank or wallet feeds, provider synchronization, bank credentials, OCR/PDF parsing, AI matching, cross-currency reconciliation, currency conversion, the full MDS-900 report engine, customer receipts, supplier payments, expenses, payment/disbursement source modules, or source-module economic ownership. Phase 2A and Phase 2B also do not implement Sales, Collections, Inventory movements/balances, Purchases, Expenses, Payments, Reports, price lists, tax engines, bundles, or transaction-specific customer/supplier ledgers.
 
 No Master Registry CRUD or transaction module was started in Phase 1B.
 
@@ -258,9 +275,9 @@ No Master Registry CRUD or transaction module was started in Phase 1B.
 - Full permission administration and custom role design remain deferred.
 - The local PHP runtime does not have the `intl` extension enabled; `php artisan db:show` connects successfully but exits while formatting table counts. Migration status and migration execution remain successful.
 
-## Recommended next phase
+## Phase 3C-B completeness note
 
-The recommended next phase is **Phase 3C-B — Statement Import, Statement-Line Normalization, Exact/Split/Combined Matching, Reconciliation, Adjustments, Completion Locking, Reopening, and Rematching**. It must consume the existing posted movement engine and attachment/audit infrastructure, preserve immutable history, and keep source-module economic ownership explicit. Do not introduce a second ledger, generic unrestricted movement endpoint, or manual GL journal.
+The documented MDS-700 reconciliation scope is implemented for the controlled manual-statement path. MDS-700 remains partially open only where the authoritative documents do not name a machine-readable statement format or provider feed; those capabilities are intentionally documented as gaps rather than invented. The full MDS-900 reporting catalog and source transaction modules remain outside this phase.
 
 ## Render staging deployment readiness
 
