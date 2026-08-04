@@ -1,0 +1,10 @@
+# Local environment files and secrets
+.env
+.env.*
+!.env.example
+
+# Generated deployment backups
+backups/*.zip
+
+# Local tooling state
+.render-backup-staging/

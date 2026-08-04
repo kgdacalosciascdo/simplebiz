@@ -1,0 +1,16 @@
+.env
+.env.*
+.git
+.gitignore
+vendor
+node_modules
+storage/logs
+storage/framework/cache
+storage/framework/sessions
+storage/framework/testing
+storage/framework/views
+tests
+phpunit.xml
+README.md
+backups
+*.zip

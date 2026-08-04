@@ -76,9 +76,21 @@ The documents in `docs/` are the final, approved, authoritative implementation b
 - Added the Cash Accounts movement workspace for Cash In, Cash Out, Transfers, Deposits, Withdrawals, evidence upload, lifecycle actions, source/destination balance presentation, negative-balance warnings, and authoritative movement history. Full customer receipts, supplier payments, expenses, cash counts, statement import, reconciliation, and cross-currency remain outside this phase.
 - Added Phase 3B focused feature coverage for balanced Cash In posting/reversal, negative-balance blocking/override, and atomic transfer legs. The new forward-only migrations are `2026_08_04_000012_create_cash_movement_documents` and `2026_08_04_000013_seed_cash_movement_catalog`.
 
+### Phase 3C-A - Cash Counts, Variances, Adjustments, and Custodian Handover
+
+- Added the forward-only cash-count foundation for count types, company/system denomination catalogs, Cash Count headers, immutable count attempts, denomination and non-denomination lines, confirmations, variance records, adjustment records, custodian handovers, and status history.
+- Cash Count eligibility is enforced server-side: the account must be active physical Cash Account with the `supports_cash_count` type flag and `CASH_COUNT` capability. Bank and Digital Wallet accounts are not eligible merely because they have a balance.
+- Starting a count takes an explicit cut-off and stores the expected amount, movement count, movement hash, and any posted backdated movement detected after the cut-off. Expected cash is derived from posted `cash_movements`; no balance is edited or manually entered.
+- Actual cash is calculated on the server from snapshotted denomination face values and quantities. Recounts create a new attempt and preserve all prior attempts. Custodian and witness confirmations are recorded against the accepted attempt, with counter/self-approval segregation and evidence requirements enforced by the API.
+- Variances are classified as balanced, overage, or shortage. Tolerance is explicit and visible. A non-balanced count cannot close until it has a governed disposition; adjustment dispositions prepare a linked Cash Movement through the existing movement/accounting engine, and reversal uses the existing movement reversal path.
+- Custodian handover is a separate governed workflow. Completion atomically ends the outgoing primary custody assignment and creates the incoming primary assignment only after the handover confirmations, approval, count linkage, and unresolved-variance checks pass.
+- Added permissions, audit/activity evidence, correlation IDs, idempotency boundaries, optimistic versions, deterministic account/count locks, tenant isolation, and after-commit lifecycle events for the new workflows.
+- Added `Cash Counts & Variances` and `Custodian Handovers` workspace modes to Cash Accounts, including count scheduling, denomination entry, evidence upload, confirmations, review/disposition actions, reports/needs-attention views, and handover controls.
+- Added focused Phase 3C-A coverage for cut-off snapshots, denomination totals, balanced count completion, variance adjustment posting/reversal, and handover completion. Statement import, statement-line matching, reconciliation, rematching, and completion locking remain outside this phase.
+
 ## PostgreSQL and migrations
 
-The backend uses `pgsql` through environment configuration. The local PostgreSQL migration status was verified, and the Phase 2B migrations `2026_08_03_000008_create_transaction_reference_registries` and `2026_08_03_000009_seed_reference_registries`, followed by Phase 3A migrations `2026_08_03_000010_create_cash_accounts_foundation` and `2026_08_03_000011_seed_cash_accounts_foundation`, and Phase 3B migrations `2026_08_04_000012_create_cash_movement_documents` and `2026_08_04_000013_seed_cash_movement_catalog`, were applied with the normal `php artisan migrate` command. No reset or destructive migration command was used.
+The backend uses `pgsql` through environment configuration. The local PostgreSQL migration status was verified, and the Phase 2B migrations `2026_08_03_000008_create_transaction_reference_registries` and `2026_08_03_000009_seed_reference_registries`, followed by Phase 3A migrations `2026_08_03_000010_create_cash_accounts_foundation` and `2026_08_03_000011_seed_cash_accounts_foundation`, Phase 3B migrations `2026_08_04_000012_create_cash_movement_documents` and `2026_08_04_000013_seed_cash_movement_catalog`, and Phase 3C-A migrations `2026_08_04_000014_create_cash_count_foundation` and `2026_08_04_000015_seed_cash_count_catalog`, were applied with the normal `php artisan migrate` command. No reset or destructive migration command was used.
 
 Required local configuration is kept in `backend/.env` and must not be committed. New environments should copy `backend/.env.example`, set a valid PostgreSQL database and credentials, and run:
 
@@ -140,6 +152,16 @@ php artisan migrate
 - `POST /api/v1/cash-accounts/transfers/{id}/submit|review|approve|post|cancel|reverse`
 - `POST /api/v1/cash-accounts/transfers/{id}/evidence`
 - `GET /api/v1/cash-accounts/transfers/{id}/history`
+- `GET /api/v1/cash-accounts/cash-counts/types|denominations|reports`
+- `POST /api/v1/cash-accounts/cash-counts/denominations`
+- `GET|POST /api/v1/cash-accounts/cash-counts`
+- `GET /api/v1/cash-accounts/cash-counts/{id}`
+- `POST /api/v1/cash-accounts/cash-counts/{id}/start|attempts|submit|review|approve|disposition|recount|close|cancel|evidence`
+- `POST /api/v1/cash-accounts/cash-counts/{id}/attempts/{attemptId}/save|confirm`
+- `POST /api/v1/cash-accounts/cash-adjustments/{id}/approve|post|reverse`
+- `GET|POST /api/v1/cash-accounts/custodian-handovers`
+- `GET /api/v1/cash-accounts/custodian-handovers/{id}`
+- `POST /api/v1/cash-accounts/custodian-handovers/{id}/confirm|approve|complete|cancel|evidence`
 - `GET|POST /api/v1/cash-accounts/opening-balances`
 - `GET|PATCH /api/v1/cash-accounts/opening-balances/{id}`
 - `POST /api/v1/cash-accounts/opening-balances/{id}/submit|approve|return|post|reverse`
@@ -203,6 +225,8 @@ All administrative responses use the shared `data`/`meta` success envelope or `m
 - `/cash-accounts?mode=movement&kind=cash_in|cash_out`
 - `/cash-accounts?mode=transfer&purpose=INTERNAL_TRANSFER|DEPOSIT|WITHDRAWAL`
 - `/cash-accounts?mode=history`
+- `/cash-accounts?mode=counts`
+- `/cash-accounts?mode=handovers`
 - `/master-registries?registry=currencies`
 - `/master-registries?registry=payment-methods`
 - `/master-registries?registry=payment-terms`
@@ -217,13 +241,13 @@ All administrative responses use the shared `data`/`meta` success envelope or `m
 
 ## Testing
 
-Backend coverage includes setup, idempotency replay safety, login, protected routes, company context, invitations, owner protection, permission enforcement, correlation IDs, validation envelopes, shared partner roles/history, duplicate handling, item integrity rules, dependency blocking, tenant isolation, Phase 2B reference registry rules, Phase 3A Cash Account/Opening Balance rules, and Phase 3B governed movement/transfer rules. The full backend suite passes 24 tests, with 1 intentionally skipped PostgreSQL-only schema test, and 144 assertions. Frontend lint, TypeScript build, and production Vite build pass; existing frontend tests remain in place alongside the new Cash Accounts movement workspace.
+Backend coverage includes setup, idempotency replay safety, login, protected routes, company context, invitations, owner protection, permission enforcement, correlation IDs, validation envelopes, shared partner roles/history, duplicate handling, item integrity rules, dependency blocking, tenant isolation, Phase 2B reference registry rules, Phase 3A Cash Account/Opening Balance rules, Phase 3B governed movement/transfer rules, and Phase 3C-A cash-count/variance/handover rules. The full backend suite passes 26 tests, with 1 intentionally skipped PostgreSQL-only schema test, and 197 assertions. The focused Phase 3C-A suite passes 2 tests and 53 assertions. Frontend lint, TypeScript build, production Vite build, and the frontend suite pass with 3 test files and 8 tests.
 
 ## Deferred scope
 
 The following remain intentionally deferred: full custom roles, complete permission administration UI, subscription billing and entitlements, MFA, notification administration, numbering configuration, approval-policy builder, richer tax/accounting configuration, integrations, UOM conversions, merge/import tooling, and all transaction modules.
 
-Phase 3B intentionally does not implement customer receipts, supplier payments, expenses, payment/disbursement source modules, cash counts, statement import, full reconciliation, cross-currency transfers, or source-module economic ownership. Phase 2A and Phase 2B also do not implement Sales, Collections, Inventory movements/balances, Purchases, Expenses, Payments, Reports, price lists, tax engines, bundles, or transaction-specific customer/supplier ledgers.
+Phase 3C-A intentionally does not implement statement import, statement-line normalization, exact/split/combined matching, reconciliation, completion locking, reopening, rematching, customer receipts, supplier payments, expenses, payment/disbursement source modules, cross-currency transfers, or source-module economic ownership. Phase 2A and Phase 2B also do not implement Sales, Collections, Inventory movements/balances, Purchases, Expenses, Payments, Reports, price lists, tax engines, bundles, or transaction-specific customer/supplier ledgers.
 
 No Master Registry CRUD or transaction module was started in Phase 1B.
 
@@ -236,4 +260,10 @@ No Master Registry CRUD or transaction module was started in Phase 1B.
 
 ## Recommended next phase
 
-The recommended next phase is a source-owned transaction vertical from the next approved MDS workflow that can create governed Cash In/Cash Out or Transfer documents through explicit references. Preserve the rule that balances are derived from posted movements, that source modules own the economic reason, and that no generic unrestricted movement endpoint or manual GL journal is introduced.
+The recommended next phase is **Phase 3C-B — Statement Import, Statement-Line Normalization, Exact/Split/Combined Matching, Reconciliation, Adjustments, Completion Locking, Reopening, and Rematching**. It must consume the existing posted movement engine and attachment/audit infrastructure, preserve immutable history, and keep source-module economic ownership explicit. Do not introduce a second ledger, generic unrestricted movement endpoint, or manual GL journal.
+
+## Render staging deployment readiness
+
+- Added deployment-only preparation for the existing Laravel backend and React frontend: `backend/Dockerfile`, the backend Nginx/startup files, root `render.yaml`, root secret/backup ignore rules, environment-driven CORS, proxy HTTPS handling, production API URL enforcement, and environment-driven private attachment disks.
+- Added the focused [Render staging deployment guide](RENDER_STAGING_DEPLOYMENT.md). This is staging readiness only and does not mark SimpleBIZ production-ready.
+- No SimpleBIZ business module, workflow, permission, accounting rule, database entity, or user-facing business capability was changed for deployment preparation.

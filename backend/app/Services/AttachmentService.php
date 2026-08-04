@@ -30,8 +30,9 @@ final class AttachmentService
         $id = (string) Str::uuid();
         $extension = strtolower($file->getClientOriginalExtension() ?: 'bin');
         $path = "cash-accounts/{$company->id}/movement-evidence/{$id}.{$extension}";
-        Storage::disk('local')->putFileAs(dirname($path), $file, basename($path));
-        $attachment = Attachment::create(['id' => $id, 'company_id' => $company->id, 'owner_module' => 'cash-accounts', 'record_type' => $recordType, 'record_id' => $record->id, 'original_filename' => $file->getClientOriginalName(), 'stored_path' => $path, 'disk' => 'local', 'mime_type' => $file->getMimeType() ?: 'application/octet-stream', 'file_size' => $file->getSize(), 'file_hash' => $hash, 'sensitivity' => 'confidential', 'uploaded_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id')]);
+        $disk = (string) config('filesystems.default', 'local');
+        Storage::disk($disk)->putFileAs(dirname($path), $file, basename($path));
+        $attachment = Attachment::create(['id' => $id, 'company_id' => $company->id, 'owner_module' => 'cash-accounts', 'record_type' => $recordType, 'record_id' => $record->id, 'original_filename' => $file->getClientOriginalName(), 'stored_path' => $path, 'disk' => $disk, 'mime_type' => $file->getMimeType() ?: 'application/octet-stream', 'file_size' => $file->getSize(), 'file_hash' => $hash, 'sensitivity' => 'confidential', 'uploaded_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id')]);
         $this->audit->record($request, 'cash-account.evidence.uploaded', $record, $company->id, [], ['attachment_id' => $attachment->id, 'filename' => $attachment->original_filename, 'file_hash' => $hash], null, 'Evidence uploaded', 'Evidence was uploaded to a governed Cash Account document.');
 
         return $attachment;

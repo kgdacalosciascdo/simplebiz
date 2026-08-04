@@ -1,4 +1,9 @@
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000/api/v1'
+const configuredApiUrl = import.meta.env.VITE_API_URL?.trim().replace(/\/+$/, '')
+const API_URL = configuredApiUrl || (import.meta.env.DEV ? 'http://localhost:8000/api/v1' : '')
+
+if (!API_URL) {
+  throw new Error('VITE_API_URL must be configured for a production build.')
+}
 
 type ApiOptions = RequestInit & { skipAuth?: boolean }
 
@@ -8,7 +13,7 @@ export async function apiFetch<T>(path: string, options: ApiOptions = {}): Promi
   const companyId = window.localStorage.getItem('simplebiz_company_id')
   const isFormData = requestOptions.body instanceof FormData
 
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await fetch(`${API_URL}${path.startsWith('/') ? path : `/${path}`}`, {
     ...requestOptions,
     headers: {
       Accept: 'application/json',
