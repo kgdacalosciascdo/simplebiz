@@ -12,7 +12,8 @@ chmod -R ug+rwX storage bootstrap/cache
 # Config caching is safe here; route caching is intentionally omitted because
 # the existing web route file contains a closure route.
 php artisan config:cache
-
+echo "Running Laravel migrations..."
+php artisan migrate --force
 php-fpm -F &
 PHP_FPM_PID=$!
 nginx -c /tmp/nginx.conf -g 'daemon off;' &

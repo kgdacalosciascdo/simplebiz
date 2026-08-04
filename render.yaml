@@ -4,74 +4,92 @@ services:
     runtime: docker
     plan: free
     region: singapore
-    branch: staging
+    branch: develop
     rootDir: backend
     dockerfilePath: Dockerfile
     dockerContext: .
     healthCheckPath: /api/v1/health
-    preDeployCommand: php artisan migrate --force
     autoDeployTrigger: commit
+
     envVars:
       - key: APP_ENV
         value: production
+
       - key: APP_DEBUG
         value: "false"
+
       - key: APP_KEY
         sync: false
+
       - key: APP_URL
         fromService:
           type: web
           name: simplebiz-staging-api
           envVarKey: RENDER_EXTERNAL_URL
+
       - key: DB_CONNECTION
         value: pgsql
+
       - key: DB_URL
         fromDatabase:
           name: simplebiz-staging-db
           property: connectionString
+
       - key: DB_SSLMODE
         value: require
+
       - key: LOG_CHANNEL
         value: stderr
+
       - key: LOG_LEVEL
         value: info
+
       - key: FRONTEND_URL
         fromService:
           type: web
           name: simplebiz-staging-web
           envVarKey: RENDER_EXTERNAL_URL
+
       - key: CORS_ALLOWED_ORIGINS
         fromService:
           type: web
           name: simplebiz-staging-web
           envVarKey: RENDER_EXTERNAL_URL
+
       - key: FILESYSTEM_DISK
         value: local
+
       - key: QUEUE_CONNECTION
         value: sync
+
       - key: CACHE_STORE
         value: database
+
       - key: SESSION_DRIVER
         value: database
+
       - key: SESSION_SECURE_COOKIE
         value: "true"
 
   - type: web
     name: simplebiz-staging-web
     runtime: static
-    branch: staging
+    branch: develop
     rootDir: web
     buildCommand: npm ci && VITE_API_URL="${API_SERVICE_URL}/api/v1" npm run build
     staticPublishPath: dist
     autoDeployTrigger: commit
+
     envVars:
       - key: NODE_VERSION
         value: 24.14.1
+
       - key: API_SERVICE_URL
         fromService:
           type: web
           name: simplebiz-staging-api
           envVarKey: RENDER_EXTERNAL_URL
+
     routes:
       - type: rewrite
         source: /*
