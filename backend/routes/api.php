@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\CashCustodianHandoverController;
 use App\Http\Controllers\Api\CashMovementController;
 use App\Http\Controllers\Api\CashTransferController;
 use App\Http\Controllers\Api\CategoryController;
+use App\Http\Controllers\Api\CollectionsController;
 use App\Http\Controllers\Api\CompanyController;
 use App\Http\Controllers\Api\CompanyProfileController;
 use App\Http\Controllers\Api\CompanySetupController;
@@ -54,6 +55,25 @@ Route::prefix('v1')->group(function () {
                     Route::post('/{id}/post', [SalesController::class, 'action'])->defaults('action', 'post')->middleware('permission:sales.post');
                     Route::post('/{id}/cancel', [SalesController::class, 'action'])->defaults('action', 'cancel')->middleware('permission:sales.cancel');
                     Route::get('/{id}/history', [SalesController::class, 'history'])->middleware('permission:sales.history');
+                });
+                Route::prefix('collections')->group(function () {
+                    Route::get('/summary', [CollectionsController::class, 'summary'])->middleware('permission:collections.view');
+                    Route::get('/lookups', [CollectionsController::class, 'lookups'])->middleware('permission:collections.view');
+                    Route::get('/unapplied', [CollectionsController::class, 'unapplied'])->middleware('permission:collections.unapplied.view');
+                    Route::get('/ledger/{customerId}', [CollectionsController::class, 'ledger'])->middleware('permission:collections.ledger.view');
+                    Route::post('/applications', [CollectionsController::class, 'apply'])->middleware('permission:collections.applications.create');
+                    Route::post('/applications/{id}/reverse', [CollectionsController::class, 'reverseApplication'])->middleware('permission:collections.applications.reverse');
+                    Route::get('/receipts', [CollectionsController::class, 'index'])->middleware('permission:collections.view');
+                    Route::post('/receipts', [CollectionsController::class, 'store'])->middleware('permission:collections.receipts.create');
+                    Route::get('/receipts/{id}', [CollectionsController::class, 'show'])->middleware('permission:collections.view');
+                    Route::patch('/receipts/{id}', [CollectionsController::class, 'update'])->middleware('permission:collections.receipts.update');
+                    Route::post('/receipts/{id}/submit', [CollectionsController::class, 'action'])->defaults('action', 'submit')->middleware('permission:collections.receipts.submit');
+                    Route::post('/receipts/{id}/review', [CollectionsController::class, 'action'])->defaults('action', 'review')->middleware('permission:collections.receipts.review');
+                    Route::post('/receipts/{id}/approve', [CollectionsController::class, 'action'])->defaults('action', 'approve')->middleware('permission:collections.receipts.approve');
+                    Route::post('/receipts/{id}/post', [CollectionsController::class, 'action'])->defaults('action', 'post')->middleware('permission:collections.receipts.post');
+                    Route::post('/receipts/{id}/cancel', [CollectionsController::class, 'action'])->defaults('action', 'cancel')->middleware('permission:collections.receipts.cancel');
+                    Route::post('/receipts/{id}/reverse', [CollectionsController::class, 'action'])->defaults('action', 'reverse')->middleware('permission:collections.receipts.reverse');
+                    Route::get('/receipts/{id}/history', [CollectionsController::class, 'history'])->middleware('permission:collections.history.view');
                 });
                 Route::prefix('receivables')->group(function () {
                     Route::get('/', [SalesController::class, 'receivables'])->middleware('permission:sales.receivables.view');

@@ -1,24 +1,96 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowUpRight, Bell, Building2, Database, FileText, GitBranch, History, Search, Settings, ShieldCheck, SlidersHorizontal, UsersRound, UserRound } from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
-import { Badge, Card, EmptyState, PageHeader } from '../../components/ui'
+import {
+  Bell,
+  ChevronUp,
+  CircleDollarSign,
+  CircleUserRound,
+  KeyRound,
+  List,
+  Network,
+  Plug,
+  Search,
+  Settings,
+  ShieldCheck,
+  SlidersHorizontal,
+  Store,
+  type LucideIcon,
+} from 'lucide-react'
 
-type SettingCard = { icon: LucideIcon; title: string; description: string; to?: string }
+type SettingCard = {
+  icon: LucideIcon
+  title: string
+  description: string
+  button: string
+  to?: string
+}
+
 const settings: SettingCard[] = [
-  { icon: UserRound, title: 'Account & Subscription', description: 'Manage your profile, plan usage, billing, and connected SimpleBIZ products.' },
-  { icon: Building2, title: 'Business Setup', description: 'Configure your company profile, currency, locale, fiscal year, and safe defaults.', to: '/settings/business-setup' },
-  { icon: UsersRound, title: 'Users & Access', description: 'Invite users and manage company membership and allowed roles.', to: '/settings/users-access' },
-  { icon: FileText, title: 'Finance & Documents', description: 'Accounting, taxes, document numbering, and financial defaults remain deferred.' },
-  { icon: GitBranch, title: 'Workflow & Approvals', description: 'Approval policy administration remains deferred.' },
-  { icon: SlidersHorizontal, title: 'Modules & Preferences', description: 'Module entitlements and general preferences remain deferred.' },
-  { icon: Bell, title: 'Notifications', description: 'Notification administration remains deferred.' },
-  { icon: Database, title: 'Data & Integrations', description: 'Import, export, and service integrations remain deferred.' },
-  { icon: ShieldCheck, title: 'Security & Audit', description: 'Security administration remains deferred; existing audit behavior is preserved.' },
+  { icon: CircleUserRound, title: 'Account & Subscription', description: 'Manage your profile, plan, usage, billing, and connected SimpleBIZ products.', button: 'Account & Billing' },
+  { icon: Store, title: 'Business Setup', description: 'Configure your company profile, currency, locale, fiscal year, and business defaults.', button: 'Configure Business', to: '/settings/business-setup' },
+  { icon: KeyRound, title: 'Users & Access', description: 'Add users and control their roles, permissions, and access.', button: 'Manage Users & Access', to: '/settings/users-access' },
+  { icon: CircleDollarSign, title: 'Finance & Documents', description: 'Configure accounting, taxes, document numbering, and financial defaults.', button: 'Configure Finance & Documents' },
+  { icon: Network, title: 'Workflow & Approvals', description: 'Set approval requirements and supported transaction workflows.', button: 'Manage Workflows' },
+  { icon: SlidersHorizontal, title: 'Modules & Preferences', description: 'Enable modules and manage general operating preferences.', button: 'Manage Preferences' },
+  { icon: Bell, title: 'Notifications', description: 'Control in-app and email alerts for each user.', button: 'Manage Notifications' },
+  { icon: Plug, title: 'Data & Integrations', description: 'Import, export, and connect SimpleBIZ with supported services.', button: 'Manage Data & Integrations' },
+  { icon: ShieldCheck, title: 'Security & Audit', description: 'Manage MFA, sessions, login history, and administrative audit records.', button: 'Review Security & Audit' },
+]
+
+const recentChanges = [
+  ['Maria invited a new user', 'by Juan dela Cruz · 12 minutes ago'],
+  ['MFA enabled for Juan dela Cruz', 'by Juan dela Cruz · 12 minutes ago'],
+  ['Fiscal year changed', 'by Juan dela Cruz · 12 minutes ago'],
+  ['Invoice numbering updated', 'by Juan dela Cruz · 12 minutes ago'],
+  ['Email notifications disabled', 'by Juan dela Cruz · 12 minutes ago'],
+  ['Integration connected', 'by Juan dela Cruz · 12 minutes ago'],
 ]
 
 export function SettingsWorkspace() {
   const [search, setSearch] = useState('')
-  const visible = useMemo(() => settings.filter((item) => `${item.title} ${item.description}`.toLowerCase().includes(search.toLowerCase())), [search])
-  return <><PageHeader icon={<Settings size={28} strokeWidth={1.8} />} title="Settings & Administration" subtitle="Manage your business, users, security, and system settings." /><div className="sb-settings-toolbar"><label><Search size={16} aria-hidden="true" /><span className="sr-only">Search settings</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search settings…" /></label><span className="sb-settings-note">Only implemented destinations are actionable.</span></div><div className="sb-settings-grid">{visible.map((item) => { const ItemIcon = item.icon; return item.to ? <Link key={item.title} to={item.to} className="sb-settings-card sb-settings-card-active"><span className="sb-settings-icon" aria-hidden="true"><ItemIcon size={38} strokeWidth={1.7} /></span><h2>{item.title}</h2><p>{item.description}</p><span className="sb-card-action">Open {item.title} <ArrowUpRight size={14} aria-hidden="true" /></span></Link> : <article key={item.title} className="sb-settings-card"><span className="sb-settings-icon" aria-hidden="true"><ItemIcon size={38} strokeWidth={1.7} /></span><h2>{item.title}</h2><p>{item.description}</p><Badge>Deferred</Badge></article> })}</div>{visible.length === 0 && <Card><EmptyState title="No settings found" detail="Try a different search term." /></Card>}<div className="sb-settings-footer"><Card><div className="sb-panel-heading"><h2><History size={17} aria-hidden="true" />Recent Changes</h2></div><EmptyState title="Recent changes are shown in Users & Access" detail="Open the implemented administrative workspace to review current access activity." action={<Link className="sb-button-secondary" to="/settings/users-access">Open Users & Access</Link>} /></Card></div></>
+  const visible = useMemo(() => {
+    const query = search.trim().toLowerCase()
+    return settings.filter((item) => `${item.title} ${item.description}`.toLowerCase().includes(query))
+  }, [search])
+
+  return <main className="sb-admin-reference" aria-labelledby="settings-administration-title">
+    <header className="sb-admin-header">
+      <span className="sb-admin-header-icon" aria-hidden="true"><Settings /></span>
+      <div>
+        <h1 id="settings-administration-title">Settings &amp; Administration</h1>
+        <p>Manage your business, users, security, and system settings.</p>
+      </div>
+    </header>
+
+    <label className="sb-admin-search">
+      <Search aria-hidden="true" />
+      <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search settings..." aria-label="Search settings" />
+    </label>
+
+    <section className="sb-admin-grid" aria-label="Settings categories">
+      {visible.map((item) => <SettingsCard key={item.title} {...item} />)}
+      {!visible.length && <div className="sb-admin-no-results">No settings match “{search}”.</div>}
+      <RecentChanges />
+    </section>
+  </main>
+}
+
+function SettingsCard({ icon: Icon, title, description, button, to }: SettingCard) {
+  const action = <>{button}</>
+  return <article className="sb-admin-card">
+    <Icon className="sb-admin-card-icon" strokeWidth={1.65} aria-hidden="true" />
+    <h2>{title}</h2>
+    <p>{description}</p>
+    {to ? <Link to={to}>{action}</Link> : <button type="button">{action}</button>}
+  </article>
+}
+
+function RecentChanges() {
+  return <article className="sb-admin-recent">
+    <header><span><List aria-hidden="true" />Recent Changes</span><ChevronUp aria-hidden="true" /></header>
+    <div className="sb-admin-recent-list">
+      {recentChanges.map(([title, detail]) => <button type="button" key={title}><strong>{title}</strong><small>{detail}</small></button>)}
+    </div>
+    <button type="button" className="sb-admin-view-all">View all</button>
+  </article>
 }

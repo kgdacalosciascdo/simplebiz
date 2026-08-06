@@ -231,6 +231,7 @@ All administrative responses use the shared `data`/`meta` success envelope or `m
 - `/categories`
 - `/units`
 - `/cash-accounts`
+- `/collections`
 - `/cash-accounts?mode=new`
 - `/cash-accounts?account={id}`
 - `/cash-accounts?opening=new`
@@ -315,3 +316,13 @@ The documented MDS-700 reconciliation scope is implemented for the controlled ma
 - Validation: backend Phase 4A coverage passes 4 tests and 20 assertions; the existing backend suite passes 33 tests with 1 intentionally skipped PostgreSQL-only schema test; Pint, frontend ESLint, Vitest (11 tests across 4 files), TypeScript, and the production Vite build pass.
 
 Phase 4A remains intentionally bounded: customer receipts/applications remain MDS-300, inventory effects remain MDS-600, cash effects remain MDS-700, and numbering/approval policy configuration remains MDS-1100. Returns, credit notes, sales adjustments, advanced pricing, multi-currency conversion, and full reporting are not invented in this increment.
+
+## Phase 5A - Collections & Receipts Core Foundation
+
+- Added MDS-300 company-scoped receipt, receipt tender, payment application, unapplied customer credit, and lifecycle-history records with UUID identity, durable receipt numbering (`RCT-######`), status separation, totals, currency, references, optimistic versioning, and audit/correlation fields.
+- Added Collections permissions and setup bootstrap grants for receipt visibility, draft preparation, submission, approval, posting, voiding, applications, unapplied credit, customer ledger, and history. Existing companies receive the catalog through the Phase 5A permission migration; newly bootstrapped companies receive the same permissions during setup.
+- Added authenticated APIs under `/api/v1/collections` for lookups, summary, receipt register/detail/history, draft creation/update, lifecycle actions, unapplied balances, later application, application reversal, and customer ledger projection.
+- Receipt posting validates active customers, currencies, incoming Payment Methods, receiving Cash Accounts with `RECEIVE_FUNDS`, tender/application totals, customer/currency ownership, and available open-item balances. One database transaction creates the receipt posting, balanced accounting transaction, MDS-700 cash movement(s), MDS-200 settlement updates, application state, and unapplied customer credit. Cash Movement remains the authoritative cash engine; no Direct Cash In substitute is used.
+- Added the React Collections workspace with receipt register, server-backed receipt form, open-item view, unapplied/advance view, customer ledger projection, lifecycle detail, tender/application detail, and history. Sales remains the source of receivable open items, while Collections owns receipt and application behavior.
+- Deferred from this increment as required: remittance and variance workflows, controlled Other Receipts, failed/returned instrument workflows, refunds, promise-to-pay/dispute follow-up, full receipt printing/evidence orchestration, and the MDS-900 report engine.
+- Focused validation: `CollectionsPhase5ATest` passes 2 tests and 14 assertions, including unapplied-receipt reversal; the complete backend suite passes 36 tests with 1 intentionally skipped PostgreSQL-only schema test and 275 assertions. Pint, frontend ESLint, Vitest (11 tests across 4 files), TypeScript, and the production Vite build pass.

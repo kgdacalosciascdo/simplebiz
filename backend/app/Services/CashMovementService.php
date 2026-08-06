@@ -17,6 +17,7 @@ use App\Models\CashMovementStatusHistory;
 use App\Models\Company;
 use App\Models\PaymentMethod;
 use App\Models\ReasonCode;
+use App\Models\Receipt;
 use App\Support\AuditService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -199,6 +200,56 @@ final class CashMovementService
         });
 
         return $this->load($result);
+    }
+
+    /**
+     * Record a posted incoming receipt against the authoritative MDS-700 cash ledger.
+     * Collections supplies the balanced offset allocation; this method remains the
+     * only place that creates a posted cash movement for this workflow.
+     */
+    public function createIncomingReceiptEffect(CashAccount $account, Company $company, string $amount, string $currencyCode, string $businessDate, string $accountingId, array $offsets, Receipt $receipt, PaymentMethod $paymentMethod, Request $request): CashMovement
+    {
+        $this->validateAccount($account, 'RECEIVE_FUNDS', $company);
+        if ((string) $account->currency?->code !== strtoupper($currencyCode)) {
+            throw new RegistryConflictException('The receipt currency must match the Cash Account currency.');
+        }
+        if ($this->compare($amount, '0') <= 0 || ! $businessDate || $businessDate > now()->toDateString()) {
+            throw new RegistryConflictException('A posted receipt must have a positive, non-future amount and date.');
+        }
+        $total = '0';
+        foreach ($offsets as $offset) {
+            $title = AccountTitle::where('company_id', $company->id)->whereKey($offset['account_title_id'] ?? null)->where('status', 'active')->where('posting_eligible', true)->first();
+            if (! $title || $this->compare((string) ($offset['amount'] ?? '0'), '0') <= 0) {
+                throw new RegistryConflictException('Each receipt accounting allocation must use an active posting Account Title.');
+            }
+            $total = bcadd($total, (string) $offset['amount'], 6);
+        }
+        if ($this->compare($total, $amount) !== 0) {
+            throw new RegistryConflictException('Receipt accounting allocations must equal the tender amount.');
+        }
+
+        AccountingTransactionLine::create(['id' => (string) Str::uuid(), 'accounting_transaction_id' => $accountingId, 'account_title_id' => $account->account_title_id, 'debit' => $amount, 'credit' => '0', 'currency_code' => strtoupper($currencyCode), 'description' => 'Customer Receipt '.$receipt->receipt_number.' Cash Account effect']);
+        foreach ($offsets as $offset) {
+            AccountingTransactionLine::create(['id' => (string) Str::uuid(), 'accounting_transaction_id' => $accountingId, 'account_title_id' => $offset['account_title_id'], 'debit' => '0', 'credit' => $offset['amount'], 'currency_code' => strtoupper($currencyCode), 'description' => $offset['description'] ?? 'Customer Receipt offset effect']);
+        }
+
+        $clearing = $paymentMethod->clearing_behavior === 'direct' ? 'not_applicable' : 'pending';
+
+        return CashMovement::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'cash_account_id' => $account->id, 'direction' => 'increase', 'amount' => $amount, 'currency_code' => strtoupper($currencyCode), 'business_date' => $businessDate, 'posted_at' => now(), 'source_event_type' => 'EVT-COL-003', 'source_record_type' => Receipt::class, 'source_record_id' => $receipt->id, 'source_reference' => $receipt->receipt_number, 'movement_status' => 'posted', 'clearing_status' => $clearing, 'reconciliation_status' => 'unreconciled', 'accounting_transaction_id' => $accountingId, 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key')]);
+    }
+
+    public function createReceiptReversalEffect(CashAccount $account, Company $company, string $amount, string $currencyCode, string $businessDate, string $accountingId, string $offsetAccountTitleId, Receipt $receipt, PaymentMethod $paymentMethod, CashMovement $originalMovement, Request $request): CashMovement
+    {
+        $this->validateAccount($account, 'RECEIVE_FUNDS', $company);
+        $offset = AccountTitle::where('company_id', $company->id)->whereKey($offsetAccountTitleId)->where('status', 'active')->where('posting_eligible', true)->first();
+        if (! $offset || $this->compare($amount, '0') <= 0 || (string) $account->currency?->code !== strtoupper($currencyCode)) {
+            throw new RegistryConflictException('The receipt reversal requires an active receiving Cash Account, matching currency, and posting offset.');
+        }
+
+        AccountingTransactionLine::create(['id' => (string) Str::uuid(), 'accounting_transaction_id' => $accountingId, 'account_title_id' => $account->account_title_id, 'debit' => '0', 'credit' => $amount, 'currency_code' => strtoupper($currencyCode), 'description' => 'Receipt reversal '.$receipt->receipt_number.' Cash Account effect']);
+        AccountingTransactionLine::create(['id' => (string) Str::uuid(), 'accounting_transaction_id' => $accountingId, 'account_title_id' => $offset->id, 'debit' => $amount, 'credit' => '0', 'currency_code' => strtoupper($currencyCode), 'description' => 'Receipt reversal customer credit effect']);
+
+        return CashMovement::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'cash_account_id' => $account->id, 'direction' => 'decrease', 'amount' => $amount, 'currency_code' => strtoupper($currencyCode), 'business_date' => $businessDate, 'posted_at' => now(), 'source_event_type' => 'EVT-COL-010', 'source_record_type' => Receipt::class, 'source_record_id' => $receipt->id, 'source_reference' => $receipt->receipt_number.'-REV', 'movement_status' => 'posted', 'clearing_status' => $paymentMethod->clearing_behavior === 'direct' ? 'not_applicable' : 'pending', 'reconciliation_status' => 'unreconciled', 'original_movement_id' => $originalMovement->id, 'accounting_transaction_id' => $accountingId, 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key')]);
     }
 
     public function load(CashMovementDocument $document): CashMovementDocument

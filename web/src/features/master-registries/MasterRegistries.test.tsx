@@ -10,13 +10,14 @@ describe('Master Registries workspace', () => {
   })
   afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
-  it('shows the governed MDS-1000 registries and scope boundaries', async () => {
+  it('shows the reference registry dashboard and data tools', () => {
     render(<MemoryRouter><MasterRegistriesPage /></MemoryRouter>)
     expect(screen.getByText('Master Registries')).toBeInTheDocument()
-    expect(screen.getByText('Scope boundaries')).toBeInTheDocument()
-    await waitFor(() => expect(screen.getByText('3')).toBeInTheDocument())
     expect(screen.getByText('Customers')).toBeInTheDocument()
     expect(screen.getByText('Products & Services')).toBeInTheDocument()
+    expect(screen.getByText('Quick Actions')).toBeInTheDocument()
+    expect(screen.getByText('Registry Summary')).toBeInTheDocument()
+    expect(screen.getByText('Data Tools')).toBeInTheDocument()
   })
 
   it('provides an explicit shared business partner quick-create form', () => {

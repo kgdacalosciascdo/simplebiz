@@ -1,62 +1,227 @@
-import { useMemo, useState, type FormEvent } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { Ban, ClipboardList, FileText, Plus, ReceiptText, RefreshCw, ShoppingBag } from 'lucide-react'
-import { apiFetch } from '../../lib/api'
-import { queryClient } from '../../lib/queryClient'
-import { Badge, Button, Card, EmptyState, ErrorPanel, LoadingPanel, PageHeader } from '../../components/ui'
+import { useMemo, type ReactNode } from 'react'
+import type { ColumnDef } from '@tanstack/react-table'
+import {
+  ArrowRight,
+  BarChart3,
+  BookOpen,
+  BriefcaseBusiness,
+  Calculator,
+  ChevronUp,
+  Clock3,
+  Contact,
+  FilePlus2,
+  FileText,
+  HandCoins,
+  List,
+  ReceiptText,
+  RotateCcw,
+  ShoppingCart,
+  TriangleAlert,
+  UserRound,
+  Vault,
+  type LucideIcon,
+} from 'lucide-react'
+import { Bar, BarChart, Cell, LabelList, ResponsiveContainer, XAxis, YAxis } from 'recharts'
+import { Link } from 'react-router-dom'
+import { DataTable } from '../../components/DataTable'
 
-type Envelope<T> = { data: T; meta?: { pagination?: { total: number } } }
-type Customer = { id: string; code: string; display_name: string }
-type Item = { id: string; code: string; name: string; record_type: 'product' | 'service'; stock_managed: boolean; non_stock: boolean; standard_selling_price: string | null }
-type LookupData = { customers: Customer[]; items: Item[]; currencies: { id: string; code: string; symbol: string }[]; payment_terms: { id: string; code: string; name: string; term_type: string; due_days: number }[]; tax_codes: { id: string; code: string; name: string; rate: string; basis: string }[] }
-type Sale = { id: string; sale_number: string; sale_type: string; payment_basis: string; sale_date: string; status: string; customer?: Customer; total: string; remaining_amount: string; due_date?: string; due_status: string; blocked_code?: string; blocked_reason?: string; version: number; lines?: SaleLine[]; history?: { id: string; from_status?: string; to_status: string; reason?: string; created_at: string }[]; currency?: { code: string; symbol: string } }
-type SaleLine = { id: string; item_code: string; description: string; quantity: string; unit_price: string; discount_amount: string; tax_amount: string; net_amount: string; stock_managed: boolean; service: boolean }
-type Receivable = { id: string; source_document_number: string; customer?: Customer; original_amount: string; remaining_amount: string; due_date?: string; due_status: string; settlement_status: string; currency?: { code: string } }
-type Statement = { id: string; statement_number: string; customer?: Customer; statement_date: string; status: string; ending_balance: string; currency?: { code: string } }
-type SalesSummary = { sales: { total: number; draft: number; awaiting_review: number; approved: number; posted: number; blocked: number }; receivables: { open_items: number; overdue: number; due_today: number } }
-
-const money = (value: string | number, currency = 'PHP') => new Intl.NumberFormat('en-PH', { style: 'currency', currency, maximumFractionDigits: 2 }).format(Number(value))
-const key = () => `${Date.now()}-${crypto.randomUUID()}`
-
-export function SalesWorkspace() {
-  const [tab, setTab] = useState<'overview' | 'receivables' | 'statements'>('overview')
-  const [formOpen, setFormOpen] = useState(false)
-  const [selected, setSelected] = useState<Sale | null>(null)
-  const sales = useQuery({ queryKey: ['simplebiz', 'sales'], queryFn: () => apiFetch<Envelope<Sale[]>>('/sales?per_page=50') })
-  const summary = useQuery({ queryKey: ['simplebiz', 'sales-summary'], queryFn: () => apiFetch<Envelope<SalesSummary>>('/sales/summary') })
-  const lookups = useQuery({ queryKey: ['simplebiz', 'sales-lookups'], queryFn: () => apiFetch<Envelope<LookupData>>('/sales/lookups') })
-  const receivables = useQuery({ queryKey: ['simplebiz', 'receivables'], queryFn: () => apiFetch<Envelope<Receivable[]>>('/receivables?per_page=50'), enabled: tab === 'receivables' || tab === 'overview' })
-  const statements = useQuery({ queryKey: ['simplebiz', 'billing-statements'], queryFn: () => apiFetch<Envelope<Statement[]>>('/billing-statements?per_page=50'), enabled: tab === 'statements' })
-  const aging = useQuery({ queryKey: ['simplebiz', 'receivables-aging'], queryFn: () => apiFetch<Envelope<Record<string, string>>>('/receivables/aging'), enabled: tab === 'receivables' || tab === 'overview' })
-  const create = useMutation({ mutationFn: (payload: Record<string, unknown>) => apiFetch<Envelope<Sale>>('/sales', { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify(payload) }), onSuccess: async () => { setFormOpen(false); await queryClient.invalidateQueries({ queryKey: ['simplebiz', 'sales'] }) } })
-  const busy = sales.isPending || lookups.isPending
-  const error = sales.error || lookups.error
-
-  return <div className="space-y-5">
-    <PageHeader icon={<ShoppingBag size={31} strokeWidth={1.7} />} title="Sales & Receivables" subtitle="Prepare credit sales, monitor outstanding customer balances, and generate billing statements." action={<div className="flex flex-wrap gap-2"><Button secondary disabled title="Cash Sale posting requires Collections & Receipts"><Ban size={15} />Cash Sale · Collections required</Button><Button secondary onClick={() => setTab('statements')}><FileText size={15} />Billing statements</Button><Button onClick={() => setFormOpen(true)}><Plus size={16} />New credit sale</Button></div>} />
-    {error && <ErrorPanel message={error instanceof Error ? error.message : 'Sales data could not be loaded.'} onRetry={() => void queryClient.invalidateQueries({ queryKey: ['simplebiz', 'sales'] })} />}
-    <div className="grid gap-3 md:grid-cols-4">
-      <MetricCard label="Open receivables" value={receivables.data?.meta?.pagination?.total ?? 0} icon={ReceiptText} tone="blue" />
-      <MetricCard label="Overdue balance" value={money(aging.data?.data.over_90 ?? '0')} icon={ClipboardList} tone="rose" />
-      <MetricCard label="Sales this workspace" value={sales.data?.meta?.pagination?.total ?? 0} icon={ShoppingBag} tone="yellow" />
-      <MetricCard label="Posting boundary" value="Credit / service" icon={Ban} tone="mint" />
-    </div>
-    <div className="flex flex-wrap gap-2 border-b border-slate-300 pb-2"><TabButton active={tab === 'overview'} onClick={() => setTab('overview')}>Sales history</TabButton><TabButton active={tab === 'receivables'} onClick={() => setTab('receivables')}>Receivables & aging</TabButton><TabButton active={tab === 'statements'} onClick={() => setTab('statements')}>Billing statements</TabButton></div>
-    {formOpen && <SaleForm lookups={lookups.data?.data} submitting={create.isPending} error={create.error} onCancel={() => setFormOpen(false)} onSubmit={(payload) => create.mutate(payload)} />}
-    {tab === 'overview' && <><Attention summary={summary.data?.data} /><Overview sales={sales.data?.data ?? []} selected={selected} onSelect={setSelected} loading={busy} onNew={() => setFormOpen(true)} /></>}
-    {tab === 'receivables' && <Receivables items={receivables.data?.data ?? []} aging={aging.data?.data ?? {}} loading={receivables.isPending} />}
-    {tab === 'statements' && <Statements items={statements.data?.data ?? []} loading={statements.isPending} lookups={lookups.data?.data} />}
-    {selected && <SaleDetail sale={selected} onClose={() => setSelected(null)} />}
-  </div>
+type Activity = {
+  date: string
+  activity: string
+  amount: string
+  user: string
 }
 
-function Attention({ summary }: { summary?: SalesSummary }) { if (!summary) return null; const rows = [{ label: 'Draft Sales', value: summary.sales.draft, tone: 'warning' as const }, { label: 'Awaiting review / approval', value: summary.sales.awaiting_review, tone: 'info' as const }, { label: 'Blocked postings', value: summary.sales.blocked, tone: 'danger' as const }, { label: 'Overdue receivables', value: summary.receivables.overdue, tone: 'danger' as const }, { label: 'Due today', value: summary.receivables.due_today, tone: 'warning' as const }].filter((row) => row.value > 0); return <Card className="bg-[#edf7fb]"><div className="flex items-center justify-between"><div><h2 className="text-lg font-semibold text-slate-900">Needs Attention</h2><p className="text-sm text-slate-500">Sales-owned follow-up and dependency states.</p></div><Badge tone={rows.length ? 'warning' : 'success'}>{rows.length ? `${rows.length} categories` : 'All clear'}</Badge></div>{rows.length ? <div className="mt-4 grid gap-2 md:grid-cols-5">{rows.map((row) => <div key={row.label} className="rounded-lg border border-slate-200 bg-white p-3"><Badge tone={row.tone}>{row.value}</Badge><p className="mt-2 text-sm font-semibold text-slate-800">{row.label}</p></div>)}</div> : <p className="mt-4 text-sm text-slate-600">No drafts, blocked postings, or due receivables need attention.</p>}</Card> }
+type ActionCard = {
+  title: string
+  description: string
+  button: string
+  icon: LucideIcon
+  tone: string
+  to?: string
+}
 
-function MetricCard({ label, value, icon: Icon, tone }: { label: string; value: string | number; icon: typeof ShoppingBag; tone: string }) { return <Card className={`border-l-4 border-l-[#168fc6] bg-white`}><div className="flex items-center justify-between"><span className="text-sm text-slate-500">{label}</span><span className={`rounded-lg bg-${tone}-100 p-2 text-[#168fc6]`}><Icon size={18} /></span></div><strong className="mt-2 block text-2xl text-slate-900">{value}</strong></Card> }
-function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: string }) { return <button type="button" onClick={onClick} className={`rounded-md px-3 py-2 text-sm font-semibold transition ${active ? 'bg-[#168fc6] text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-[#126ca0]'}`}>{children}</button> }
-function Overview({ sales, selected, onSelect, loading, onNew }: { sales: Sale[]; selected: Sale | null; onSelect: (sale: Sale) => void; loading: boolean; onNew: () => void }) { return <Card><div className="mb-4 flex items-center justify-between"><div><h2 className="text-lg font-semibold text-slate-900">Recent sales</h2><p className="text-sm text-slate-500">Credit sales are posted only after approval and required dependencies are ready.</p></div><Button secondary onClick={onNew}><Plus size={15} />Prepare draft</Button></div>{loading ? <LoadingPanel label="Loading Sales history…" /> : !sales.length ? <EmptyState title="No sales yet" detail="Create the first credit sale draft when customer and item registries are ready." action={<Button onClick={onNew}>Create credit sale</Button>} /> : <div className="overflow-x-auto"><table className="sb-data-table w-full"><thead><tr><th>Document</th><th>Customer</th><th>Date</th><th>Status</th><th className="text-right">Total</th><th className="text-right">Open</th></tr></thead><tbody>{sales.map((sale) => <tr key={sale.id} onClick={() => onSelect(sale)} className={`cursor-pointer hover:bg-[#e7f5fb] ${selected?.id === sale.id ? 'bg-[#e7f5fb]' : ''}`}><td><strong>{sale.sale_number}</strong><small>{sale.sale_type.replace('_', ' ')}</small></td><td>{sale.customer?.display_name ?? 'Walk-in / not identified'}</td><td>{sale.sale_date}</td><td><StatusBadge status={sale.status} blocked={sale.blocked_code} /></td><td className="text-right">{money(sale.total, sale.currency?.code)}</td><td className="text-right">{money(sale.remaining_amount, sale.currency?.code)}</td></tr>)}</tbody></table></div>}</Card> }
-function Receivables({ items, aging, loading }: { items: Receivable[]; aging: Record<string, string>; loading: boolean }) { return <div className="grid gap-5 xl:grid-cols-[1fr_300px]"><Card><div className="mb-4 flex items-center justify-between"><div><h2 className="text-lg font-semibold text-slate-900">Receivable open items</h2><p className="text-sm text-slate-500">Settlements and customer applications are owned by Collections.</p></div><Badge tone="info">Read-only in Phase 4A</Badge></div>{loading ? <LoadingPanel label="Loading receivables…" /> : !items.length ? <EmptyState title="No open receivables" detail="Posted credit sales will appear here." /> : <div className="overflow-x-auto"><table className="sb-data-table w-full"><thead><tr><th>Source</th><th>Customer</th><th>Due</th><th>Status</th><th className="text-right">Remaining</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td><strong>{item.source_document_number}</strong></td><td>{item.customer?.display_name}</td><td>{item.due_date ?? 'No due date'}</td><td><Badge tone={item.due_status === 'overdue' ? 'danger' : 'warning'}>{item.due_status.replaceAll('_', ' ')}</Badge></td><td className="text-right">{money(item.remaining_amount, item.currency?.code)}</td></tr>)}</tbody></table></div>}</Card><Card><h2 className="text-lg font-semibold text-slate-900">Aging snapshot</h2><div className="mt-4 space-y-3">{[['current', 'Not yet due'], ['1_30', '1–30 days'], ['31_60', '31–60 days'], ['61_90', '61–90 days'], ['over_90', 'Over 90 days']].map(([keyName, label]) => <div key={keyName} className="flex items-center justify-between border-b border-slate-200 pb-2 text-sm"><span className="text-slate-600">{label}</span><strong>{money(aging[keyName] ?? '0')}</strong></div>)}</div></Card></div> }
-function Statements({ items, loading, lookups }: { items: Statement[]; loading: boolean; lookups?: LookupData }) { const [customerId, setCustomerId] = useState(''); const [date, setDate] = useState(new Date().toISOString().slice(0, 10)); const create = useMutation({ mutationFn: () => apiFetch<Envelope<Statement>>('/billing-statements', { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ customer_id: customerId, statement_date: date }) }), onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['simplebiz', 'billing-statements'] }) }); return <div className="grid gap-5 xl:grid-cols-[360px_1fr]"><Card><h2 className="text-lg font-semibold text-slate-900">Generate statement</h2><p className="mt-1 text-sm text-slate-500">A statement summarizes existing open items and does not create a new receivable.</p><label className="mt-4 block text-sm font-semibold">Customer<select value={customerId} onChange={(event) => setCustomerId(event.target.value)} className="sb-form-input mt-1"><option value="">Choose customer…</option>{lookups?.customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.display_name} · {customer.code}</option>)}</select></label><label className="mt-3 block text-sm font-semibold">Statement date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} className="sb-form-input mt-1" /></label>{create.error && <p className="mt-3 text-sm text-red-700">{create.error instanceof Error ? create.error.message : 'Statement could not be generated.'}</p>}<Button className="mt-4 w-full" disabled={!customerId || create.isPending} onClick={() => create.mutate()}>{create.isPending ? 'Generating…' : 'Generate statement'}</Button></Card><Card><div className="mb-4 flex items-center justify-between"><div><h2 className="text-lg font-semibold text-slate-900">Statement history</h2><p className="text-sm text-slate-500">Retained statement identity and source balances.</p></div><RefreshCw size={17} className="text-slate-400" /></div>{loading ? <LoadingPanel label="Loading statements…" /> : !items.length ? <EmptyState title="No statements yet" detail="Generated billing statements will appear here." /> : <div className="overflow-x-auto"><table className="sb-data-table w-full"><thead><tr><th>Statement</th><th>Customer</th><th>Date</th><th>Status</th><th className="text-right">Ending balance</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td><strong>{item.statement_number}</strong></td><td>{item.customer?.display_name}</td><td>{item.statement_date}</td><td><Badge tone="success">{item.status}</Badge></td><td className="text-right">{money(item.ending_balance, item.currency?.code)}</td></tr>)}</tbody></table></div>}</Card></div> }
-function SaleForm({ lookups, submitting, error, onCancel, onSubmit }: { lookups?: LookupData; submitting: boolean; error: Error | null; onCancel: () => void; onSubmit: (payload: Record<string, unknown>) => void }) { const [customerId, setCustomerId] = useState(''); const [itemId, setItemId] = useState(''); const [quantity, setQuantity] = useState('1'); const [price, setPrice] = useState(''); const [taxCodeId, setTaxCodeId] = useState(''); const [date, setDate] = useState(new Date().toISOString().slice(0, 10)); const [termId, setTermId] = useState(''); const [search, setSearch] = useState(''); const [notes, setNotes] = useState(''); const items = useMemo(() => (lookups?.items ?? []).filter((item) => `${item.code} ${item.name}`.toLowerCase().includes(search.toLowerCase())), [lookups?.items, search]); const selected = lookups?.items.find((item) => item.id === itemId); const total = Number(quantity || 0) * Number(price || selected?.standard_selling_price || 0); function submit(event: FormEvent) { event.preventDefault(); if (!customerId || !itemId || !termId) return; onSubmit({ sale_type: 'credit_sale', payment_basis: 'credit', sale_date: date, customer_id: customerId, payment_term_id: termId, notes, lines: [{ product_service_id: itemId, quantity: Number(quantity), ...(price ? { unit_price: Number(price) } : {}), ...(taxCodeId ? { tax_code_id: taxCodeId } : {}) }] }) } return <Card className="border-2 border-[#168fc6] bg-[#f4fbfe]"><div className="mb-4 flex items-start justify-between"><div><h2 className="text-xl font-semibold text-slate-900">Prepare credit sale</h2><p className="text-sm text-slate-600">The server recalculates totals, due date, and lifecycle state.</p></div><Button secondary onClick={onCancel}>Close</Button></div><form onSubmit={submit} className="grid gap-4 lg:grid-cols-2"><label className="text-sm font-semibold">Customer<select required value={customerId} onChange={(event) => setCustomerId(event.target.value)} className="sb-form-input mt-1"><option value="">Choose active credit customer…</option>{lookups?.customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.display_name} · {customer.code}</option>)}</select></label><label className="text-sm font-semibold">Sale date<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} className="sb-form-input mt-1" /></label><label className="text-sm font-semibold lg:col-span-2">Item search<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search product or service…" className="sb-form-input mt-1" /></label><label className="text-sm font-semibold lg:col-span-2">Product or service<select required value={itemId} onChange={(event) => { setItemId(event.target.value); const item = lookups?.items.find((entry) => entry.id === event.target.value); setPrice(item?.standard_selling_price ?? '') }} className="sb-form-input mt-1"><option value="">Choose sellable item…</option>{items.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.code}{item.record_type === 'service' ? ' · service' : item.stock_managed ? ' · stock-managed' : ' · non-stock'}</option>)}</select></label><label className="text-sm font-semibold">Quantity<input required min="0.000001" step="0.000001" type="number" value={quantity} onChange={(event) => setQuantity(event.target.value)} className="sb-form-input mt-1" /></label><label className="text-sm font-semibold">Unit price<input min="0" step="0.000001" type="number" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="Use standard selling price" className="sb-form-input mt-1" /></label><label className="text-sm font-semibold">Payment term<select required value={termId} onChange={(event) => setTermId(event.target.value)} className="sb-form-input mt-1"><option value="">Choose payment term…</option>{lookups?.payment_terms.map((term) => <option key={term.id} value={term.id}>{term.name} · {term.due_days} days</option>)}</select></label><label className="text-sm font-semibold">Tax code<select value={taxCodeId} onChange={(event) => setTaxCodeId(event.target.value)} className="sb-form-input mt-1"><option value="">Tax exempt / no tax code</option>{lookups?.tax_codes.map((tax) => <option key={tax.id} value={tax.id}>{tax.name} · {tax.rate}% {tax.basis}</option>)}</select></label><label className="text-sm font-semibold lg:col-span-2">Notes<input value={notes} onChange={(event) => setNotes(event.target.value)} className="sb-form-input mt-1" /></label><div className="flex items-end justify-between rounded-lg bg-white p-3 lg:col-span-2"><div><span className="text-sm text-slate-500">Provisional total</span><strong className="ml-2 text-xl text-slate-900">{money(total)}</strong></div><Button disabled={submitting || !lookups}>{submitting ? 'Saving draft…' : 'Save credit sale draft'}</Button></div></form>{error && <p className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error.message}</p>}</Card> }
-function SaleDetail({ sale, onClose }: { sale: Sale; onClose: () => void }) { const detail = useQuery({ queryKey: ['simplebiz', 'sale', sale.id], queryFn: () => apiFetch<Envelope<Sale>>(`/sales/${sale.id}`) }); const action = useMutation({ mutationFn: ({ name, reason }: { name: string; reason?: string }) => apiFetch<Envelope<Sale>>(`/sales/${sale.id}/${name}`, { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ version: detail.data?.data.version, reason }) }), onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['simplebiz', 'sales'] }); await detail.refetch() } }); const current = detail.data?.data ?? sale; const run = (name: string) => { const reason = name === 'return' || name === 'cancel' ? window.prompt(`Reason for ${name}:`) ?? undefined : undefined; if ((name === 'return' || name === 'cancel') && !reason) return; action.mutate({ name, reason }) }; const can = (name: string) => <Button secondary disabled={action.isPending} onClick={() => run(name)}>{action.isPending ? 'Working…' : name.replaceAll('_', ' ')}</Button>; return <Card className="border-2 border-[#168fc6] bg-white"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs uppercase tracking-wide text-slate-500">Sale detail</p><h2 className="text-xl font-semibold text-slate-900">{current.sale_number}</h2><p className="text-sm text-slate-500">{current.customer?.display_name ?? 'Customer not identified'} · {current.sale_date}</p></div><div className="flex items-center gap-2"><StatusBadge status={current.status} blocked={current.blocked_code} /><Button secondary onClick={onClose}>Close</Button></div></div>{action.error && <p className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{action.error instanceof Error ? action.error.message : 'The Sales action failed.'}</p>}{current.blocked_reason && <div className="mt-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800"><strong>Posting dependency: {current.blocked_code}</strong><br />{current.blocked_reason}</div>}{current.status !== 'posted' && current.status !== 'cancelled' && current.status !== 'failed' && <div className="mt-4 flex flex-wrap gap-2">{current.status === 'draft' && can('submit')}{current.status === 'for_approval' && <>{can('review')}{can('return')}{can('approve')}</>}{current.status === 'approved' && <>{can('post')}{can('cancel')}</>}{current.status === 'for_approval' && can('cancel')}</div>}{detail.isPending ? <LoadingPanel label="Loading Sale detail…" /> : <><div className="mt-4 overflow-x-auto"><table className="sb-data-table w-full"><thead><tr><th>Item</th><th>Qty</th><th className="text-right">Price</th><th className="text-right">Tax</th><th className="text-right">Net</th></tr></thead><tbody>{(current.lines ?? []).map((line) => <tr key={line.id}><td><strong>{line.item_code}</strong><small>{line.description}</small></td><td>{line.quantity}</td><td className="text-right">{money(line.unit_price, current.currency?.code)}</td><td className="text-right">{money(line.tax_amount, current.currency?.code)}</td><td className="text-right">{money(line.net_amount, current.currency?.code)}</td></tr>)}</tbody></table></div><div className="mt-4 flex justify-end gap-6 text-sm"><span>Open balance <strong>{money(current.remaining_amount, current.currency?.code)}</strong></span><span>Total <strong className="text-lg">{money(current.total, current.currency?.code)}</strong></span></div><div className="mt-5 border-t border-slate-200 pt-4"><h3 className="font-semibold text-slate-900">Status history</h3>{current.history?.length ? <div className="mt-2 space-y-2">{current.history.map((entry) => <div key={entry.id} className="flex items-start justify-between gap-3 text-sm"><span><strong>{entry.from_status ?? 'created'} → {entry.to_status}</strong>{entry.reason && <small className="ml-2 text-slate-500">{entry.reason}</small>}</span><time className="text-slate-500">{new Date(entry.created_at).toLocaleString()}</time></div>)}</div> : <p className="mt-2 text-sm text-slate-500">No lifecycle transitions recorded yet.</p>}</div></>}</Card> }
-function StatusBadge({ status, blocked }: { status: string; blocked?: string }) { return <Badge tone={blocked ? 'danger' : status === 'posted' ? 'success' : status === 'approved' ? 'info' : status === 'cancelled' ? 'danger' : 'warning'}>{blocked ? `Blocked · ${blocked}` : status.replaceAll('_', ' ')}</Badge> }
+const actionCards: ActionCard[] = [
+  { title: 'Cash Sales', description: 'Create a cash sale.', button: 'New Sale', icon: Calculator, tone: 'yellow' },
+  { title: 'Credit Sales', description: 'Create a credit sale.', button: 'New Sale', icon: Calculator, tone: 'blue' },
+  { title: 'Collections', description: 'Receive money as payment of customer account receivables.', button: 'Receive Payment', icon: HandCoins, tone: 'mint', to: '/collections' },
+  { title: 'Customer', description: 'Create a new customer record', button: 'New Customer', icon: Contact, tone: 'peach', to: '/customers' },
+  { title: 'Cash Remittance', description: 'Record cash remittance', button: 'Record Remittance', icon: Vault, tone: 'lilac' },
+]
+
+const attentionItems = [
+  { count: 5, title: 'Overdue customer balances', detail: '₱18,750 requires follow-up', tone: 'red' },
+  { count: 1, title: 'Cash remittance shortages / overages', detail: '₱500 cash shortage discovered', tone: 'red' },
+  { count: 1, title: 'Sales return', detail: '₱1,000 worth of item is returned', tone: 'amber' },
+  { count: 7, title: 'Voided sales', detail: '₱300 worth of sales transaction is voided', tone: 'slate' },
+  { count: 3, title: 'Due in the next 7 days', detail: '₱50,580 due for collection in the next 7 days', tone: 'slate' },
+]
+
+const snapshotData = [
+  { name: 'Sales This Month', value: 493583, label: '₱493,583', color: '#2e86d7' },
+  { name: 'Accounts Receivables', value: 176200, label: '₱176,200', color: '#e64943' },
+  { name: 'Overdue', value: 84300, label: '₱84,300', color: '#f28a24' },
+  { name: 'Collected This Month', value: 312900, label: '₱312,900', color: '#49ae68' },
+]
+
+const activities: Activity[] = [
+  { date: '29 July 2026', activity: 'Sales return recorded', amount: '₱1,000', user: 'KVL' },
+  { date: '29 July 2026', activity: 'Sale voided', amount: '₱300', user: 'KVL' },
+  { date: '29 July 2026', activity: 'Cash sale recorded', amount: '₱5,000', user: 'CAL' },
+  { date: '29 July 2026', activity: 'Cash sale recorded', amount: '₱10,000', user: 'CAL' },
+  { date: '29 July 2026', activity: 'Credit sale recorded', amount: '₱12,000', user: 'KVL' },
+  { date: '29 July 2026', activity: 'Payment received for Invoice 1234', amount: '₱25,000', user: 'KVL' },
+  { date: '29 July 2026', activity: 'Cash sale recorded', amount: '₱3,000', user: 'CAL' },
+]
+
+const records = [
+  { label: 'Sales History', icon: Calculator },
+  { label: 'Collection History', icon: HandCoins },
+  { label: 'Remittance History', icon: Vault },
+  { label: 'Customer Ledger', icon: BookOpen },
+  { label: 'Cash Short/Over', icon: BriefcaseBusiness },
+  { label: 'Overdue Accounts', icon: Clock3 },
+]
+
+const reportColumns = [
+  [
+    { label: 'Daily Sales Report', icon: BarChart3 },
+    { label: 'Sales Summary Report', icon: BarChart3 },
+    { label: 'Sales by Product / Service', icon: ShoppingCart },
+    { label: 'Sales by Customer', icon: UserRound },
+    { label: 'Sales Returns & Discounts', icon: ReceiptText },
+    { label: 'Sales Trend', icon: ShoppingCart },
+  ],
+  [
+    { label: 'Receivables Summary', icon: BarChart3 },
+    { label: 'Receivables Aging', icon: BarChart3 },
+    { label: 'Customer Balances', icon: ReceiptText },
+    { label: 'Unpaid & Partially Paid Sales', icon: ShoppingCart },
+    { label: 'Overdue Receivables', icon: ReceiptText },
+    { label: 'Receivables Movement', icon: ReceiptText },
+  ],
+]
+
+const centerActions = [
+  { label: 'Create Billing Statement', icon: FileText, tone: 'mint' },
+  { label: 'Create Credit Adjustment', icon: FilePlus2, tone: 'blue' },
+  { label: 'Create Debit Adjustment', icon: FilePlus2, tone: 'peach' },
+  { label: 'Record Sales Return', icon: RotateCcw, tone: 'yellow' },
+]
+
+export function SalesWorkspace() {
+  const columns = useMemo<ColumnDef<Activity, unknown>[]>(() => [
+    { accessorKey: 'date', header: 'Date' },
+    { accessorKey: 'activity', header: 'Activity' },
+    { accessorKey: 'amount', header: 'Amount' },
+    { accessorKey: 'user', header: 'User' },
+  ], [])
+
+  return <main className="sb-sales-reference" aria-labelledby="sales-management-title">
+    <header className="sb-sales-header">
+      <div className="sb-sales-title-icon" aria-hidden="true"><Calculator /></div>
+      <div>
+        <h1 id="sales-management-title">Sales Management</h1>
+        <p>Create sales, collect payments, follow up what&apos;s due, and manage customers.</p>
+      </div>
+    </header>
+
+    <section className="sb-sales-action-grid" aria-label="Sales shortcuts">
+      {actionCards.map((card) => <SalesActionCard key={card.title} {...card} />)}
+    </section>
+
+    <section className="sb-sales-dashboard-grid sb-sales-dashboard-grid-middle">
+      <SalesPanel title="Needs Attention" icon={TriangleAlert} meta="24 items" className="sb-sales-span-two">
+        <div className="sb-sales-attention-list">
+          {attentionItems.map((item) => <button type="button" className="sb-sales-attention-row" key={item.title}>
+            <span className={`sb-sales-count sb-sales-count-${item.tone}`}>{item.count}</span>
+            <span><strong>{item.title}</strong><small>{item.detail}</small></span>
+            <ArrowRight aria-hidden="true" />
+          </button>)}
+        </div>
+        <PanelLink>View all</PanelLink>
+      </SalesPanel>
+
+      <SalesPanel title="Sales & Receivables Snapshot" icon={List} className="sb-sales-span-two">
+        <div className="sb-sales-chart" aria-label="Sales and receivables bar chart">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={snapshotData} layout="vertical" margin={{ top: 5, right: 64, bottom: 5, left: 5 }}>
+              <XAxis type="number" domain={[0, 550000]} hide />
+              <YAxis type="category" dataKey="name" width={142} axisLine={false} tickLine={false} tick={{ fill: '#526678', fontSize: 11 }} />
+              <Bar dataKey="value" barSize={21} radius={[0, 2, 2, 0]}>
+                {snapshotData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                <LabelList dataKey="label" position="right" fill="#526678" fontSize={10} />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="sb-sales-total-row">
+          <BarChart3 aria-hidden="true" />
+          <span>Total Sales This Month<strong>₱493,583</strong></span>
+          <small>12.6% increase vs last month</small>
+          <PanelLink>View report</PanelLink>
+        </div>
+      </SalesPanel>
+
+      <SalesPanel title="Records & Ledgers" icon={List}>
+        <div className="sb-sales-record-grid">
+          {records.map(({ label, icon: Icon }) => <button type="button" key={label} className="sb-sales-record-item">
+            <Icon aria-hidden="true" />
+            <span>{label}</span>
+          </button>)}
+        </div>
+      </SalesPanel>
+    </section>
+
+    <section className="sb-sales-dashboard-grid sb-sales-dashboard-grid-lower">
+      <SalesPanel title="Recent Activity" icon={List} className="sb-sales-span-two" footer={<PanelLink>View all</PanelLink>}>
+        <div className="sb-sales-activity-table"><DataTable data={activities} columns={columns} caption="Recent Sales activity" /></div>
+      </SalesPanel>
+
+      <SalesPanel title="Reports" icon={List} className="sb-sales-span-two" footer={<PanelLink>View all</PanelLink>}>
+        <div className="sb-sales-report-grid">
+          {reportColumns.map((column, index) => <div key={index}>
+            {column.map(({ label, icon: Icon }) => <button type="button" key={label} className="sb-sales-report-link">
+              <Icon aria-hidden="true" /><span>{label}</span>
+            </button>)}
+          </div>)}
+        </div>
+      </SalesPanel>
+
+      <SalesPanel title="Action Center" icon={List} footer={<PanelLink>View all</PanelLink>}>
+        <div className="sb-sales-center-actions">
+          {centerActions.map(({ label, icon: Icon, tone }) => <button type="button" key={label} className={`sb-sales-center-button sb-sales-center-${tone}`}>
+            <Icon aria-hidden="true" /><span>{label}</span>
+          </button>)}
+        </div>
+      </SalesPanel>
+    </section>
+  </main>
+}
+
+function SalesActionCard({ title, description, button, icon: Icon, tone, to }: ActionCard) {
+  const content = <><span>{button}</span></>
+  return <article className={`sb-sales-action-card sb-sales-action-${tone}`}>
+    <Icon className="sb-sales-action-icon" strokeWidth={1.65} aria-hidden="true" />
+    <h2>{title}</h2>
+    <p>{description}</p>
+    {to
+      ? <Link className="sb-sales-card-button" to={to}>{content}</Link>
+      : <button className="sb-sales-card-button" type="button">{content}</button>}
+  </article>
+}
+
+function SalesPanel({ title, icon: Icon, meta, className = '', footer, children }: { title: string; icon: LucideIcon; meta?: string; className?: string; footer?: ReactNode; children: ReactNode }) {
+  return <article className={`sb-sales-panel ${className}`}>
+    <header className="sb-sales-panel-header">
+      <span><Icon aria-hidden="true" />{title}</span>
+      <span className="sb-sales-panel-meta">{meta}<ChevronUp aria-hidden="true" /></span>
+    </header>
+    <div className="sb-sales-panel-body">{children}</div>
+    {footer && <footer className="sb-sales-panel-footer">{footer}</footer>}
+  </article>
+}
+
+function PanelLink({ children }: { children: ReactNode }) {
+  return <button type="button" className="sb-sales-panel-link">{children}<ArrowRight aria-hidden="true" /></button>
+}

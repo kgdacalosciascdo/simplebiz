@@ -120,6 +120,20 @@ class CompanySetupController extends Controller
                     'master-registries.units.update' => ['Update Units of Measure', 'master-registries'],
                     'master-registries.units.deactivate' => ['Deactivate Units of Measure', 'master-registries'],
                     'master-registries.units.reactivate' => ['Reactivate Units of Measure', 'master-registries'],
+                    'collections.view' => ['View Collections & Receipts', 'collections'],
+                    'collections.receipts.create' => ['Create Receipts', 'collections'],
+                    'collections.receipts.update' => ['Edit Receipt Drafts', 'collections'],
+                    'collections.receipts.submit' => ['Submit Receipts', 'collections'],
+                    'collections.receipts.review' => ['Review Receipts', 'collections'],
+                    'collections.receipts.approve' => ['Approve Receipts', 'collections'],
+                    'collections.receipts.post' => ['Post Receipts', 'collections'],
+                    'collections.receipts.cancel' => ['Cancel Receipts', 'collections'],
+                    'collections.receipts.reverse' => ['Reverse Receipts', 'collections'],
+                    'collections.applications.create' => ['Apply Customer Payments', 'collections'],
+                    'collections.applications.reverse' => ['Reverse Payment Applications', 'collections'],
+                    'collections.unapplied.view' => ['View Unapplied Customer Receipts', 'collections'],
+                    'collections.ledger.view' => ['View Customer Ledger', 'collections'],
+                    'collections.history.view' => ['View Collection History', 'collections'],
                 ];
                 $permissionIds = [];
                 foreach ($permissions as $key => [$name, $module]) {
@@ -129,6 +143,7 @@ class CompanySetupController extends Controller
                 $administrator = Role::create(['company_id' => $company->id, 'name' => 'Administrator', 'slug' => 'administrator', 'system_key' => 'administrator', 'is_protected' => false, 'status' => 'active']);
                 $member = Role::create(['company_id' => $company->id, 'name' => 'Member', 'slug' => 'member', 'system_key' => 'member', 'is_protected' => false, 'status' => 'active']);
                 $registryPermissionIds = Permission::where('module', 'master-registries')->pluck('id')->all();
+                $collectionsPermissionIds = Permission::where('module', 'collections')->pluck('id')->all();
                 $cashAccountPermissionIds = Permission::where('module', 'cash-accounts')->where(function ($query) {
                     $query->where('key', 'not like', 'cash-accounts.cash-in.%')
                         ->where('key', 'not like', 'cash-accounts.cash-out.%')
@@ -147,8 +162,8 @@ class CompanySetupController extends Controller
                 $allCashAccountPermissionIds = Permission::where('module', 'cash-accounts')->pluck('id')->all();
                 $cashMovementAdministratorPermissionIds = Permission::whereIn('key', ['cash-accounts.movements.view', 'cash-accounts.movements.history', 'cash-accounts.movements.evidence.view', 'cash-accounts.movements.evidence.download', 'cash-accounts.movements.evidence.upload', 'cash-accounts.cash-in.create', 'cash-accounts.cash-in.update', 'cash-accounts.cash-in.submit', 'cash-accounts.cash-out.create', 'cash-accounts.cash-out.update', 'cash-accounts.cash-out.submit', 'cash-accounts.transfers.view', 'cash-accounts.transfers.create', 'cash-accounts.transfers.update', 'cash-accounts.transfers.submit', 'cash-accounts.denominations.view', 'cash-accounts.cash-counts.view', 'cash-accounts.cash-counts.create', 'cash-accounts.cash-counts.update', 'cash-accounts.cash-counts.start', 'cash-accounts.cash-counts.attempts', 'cash-accounts.cash-counts.submit', 'cash-accounts.cash-counts.evidence.view', 'cash-accounts.cash-counts.evidence.upload', 'cash-accounts.variances.view', 'cash-accounts.adjustments.view', 'cash-accounts.handovers.view', 'cash-accounts.cash-counts.reports.view', 'cash-accounts.statements.view', 'cash-accounts.statements.import', 'cash-accounts.statements.validate', 'cash-accounts.statements.evidence.view', 'cash-accounts.reconciliation.matches.view', 'cash-accounts.reconciliation.matches.create', 'cash-accounts.reconciliation.matches.confirm', 'cash-accounts.reconciliation.matches.unmatch', 'cash-accounts.reconciliations.view', 'cash-accounts.reconciliations.create', 'cash-accounts.reconciliations.update', 'cash-accounts.reconciliations.prepare', 'cash-accounts.reconciliations.submit', 'cash-accounts.reconciliations.review'])->pluck('id')->all();
                 $memberCashPermissionIds = Permission::where('module', 'cash-accounts')->whereIn('key', ['cash-accounts.view', 'cash-accounts.search', 'cash-accounts.history', 'cash-accounts.balance.view', 'cash-accounts.accounts.view', 'cash-accounts.custodians.view', 'cash-accounts.opening-balances.view', 'cash-accounts.evidence.view', 'cash-accounts.denominations.view', 'cash-accounts.cash-counts.view', 'cash-accounts.cash-counts.evidence.view', 'cash-accounts.variances.view', 'cash-accounts.handovers.view', 'cash-accounts.cash-counts.reports.view', 'cash-accounts.statements.view', 'cash-accounts.statements.evidence.view', 'cash-accounts.reconciliation.matches.view', 'cash-accounts.reconciliations.view'])->pluck('id')->all();
-                $owner->permissions()->sync(array_values(array_unique([...$permissionIds, ...$registryPermissionIds, ...$allCashAccountPermissionIds])));
-                $administrator->permissions()->sync(array_values(array_unique([...$registryPermissionIds, ...$cashAccountPermissionIds, ...$cashMovementAdministratorPermissionIds])));
+                $owner->permissions()->sync(array_values(array_unique([...$permissionIds, ...$registryPermissionIds, ...$collectionsPermissionIds, ...$allCashAccountPermissionIds])));
+                $administrator->permissions()->sync(array_values(array_unique([...$registryPermissionIds, ...$collectionsPermissionIds, ...$cashAccountPermissionIds, ...$cashMovementAdministratorPermissionIds])));
                 $memberRegistryPermissionIds = Permission::where('module', 'master-registries')->where(fn ($query) => $query->whereIn('key', ['master-registries.view', 'master-registries.search', 'master-registries.history'])->orWhere('key', 'like', 'master-registries.%.view'))->pluck('id')->all();
                 $member->permissions()->sync(array_values(array_unique([...$memberRegistryPermissionIds, ...$memberCashPermissionIds])));
                 DB::table('role_user')->insert(['role_id' => $owner->id, 'user_id' => $user->id, 'company_id' => $company->id, 'created_at' => now(), 'updated_at' => now()]);

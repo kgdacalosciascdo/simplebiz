@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Database } from 'lucide-react'
 import { apiFetch } from '../../lib/api'
+import { MasterRegistriesDashboard } from './MasterRegistriesDashboard'
 import { ReferenceRegistryPage as ReferenceRegistryContent, type RegistryKey } from './ReferenceRegistries'
 
 function ReferenceRegistryPage({ registry }: { registry: string }) {
@@ -33,6 +34,13 @@ function Heading({ title, subtitle, action }: { title: string; subtitle: string;
 function Button({ children, onClick, type = 'button', secondary = false, disabled = false }: { children: React.ReactNode; onClick?: () => void; type?: 'button' | 'submit'; secondary?: boolean; disabled?: boolean }) { return <button type={type} onClick={onClick} disabled={disabled} className={`rounded-lg px-4 py-2.5 text-sm font-semibold transition disabled:opacity-50 ${secondary ? 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50' : 'bg-[#168fc6] text-white hover:bg-[#147dae]'}`}>{children}</button> }
 
 export function MasterRegistriesPage() {
+  const [searchParams] = useSearchParams()
+  const registry = searchParams.get('registry') as RegistryKey | null
+  if (registry) return <ReferenceRegistryPage registry={registry} />
+  return <MasterRegistriesDashboard />
+}
+
+export function MasterRegistriesLegacyPage() {
   const [searchParams] = useSearchParams(); const [summary, setSummary] = useState<Record<string, number> | null>(null)
   useEffect(() => { apiFetch<Envelope<{ counts: Record<string, number> }>>('/master-registries').then((response) => setSummary(response.data.counts)).catch(() => setSummary(null)) }, [])
   const registry = searchParams.get('registry') as RegistryKey | null; if (registry) return <ReferenceRegistryPage registry={registry} />
