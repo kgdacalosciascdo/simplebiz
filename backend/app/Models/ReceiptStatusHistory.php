@@ -16,4 +16,9 @@ class ReceiptStatusHistory extends Model
     protected $keyType = 'string';
 
     protected $guarded = ['id'];
+
+    public function receipt()
+    {
+        return $this->belongsTo(Receipt::class);
+    }
 }

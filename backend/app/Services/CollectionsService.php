@@ -2,29 +2,40 @@
 
 namespace App\Services;
 
+use App\Events\CollectionsLifecycleEvent;
 use App\Exceptions\RegistryConflictException;
 use App\Models\AccountTitle;
 use App\Models\BusinessPartner;
 use App\Models\CashAccount;
 use App\Models\CashMovement;
+use App\Models\CashRemittance;
+use App\Models\CashRemittanceLine;
+use App\Models\CashTransferDocument;
+use App\Models\CollectionActivity;
 use App\Models\Company;
 use App\Models\CustomerUnappliedReceipt;
+use App\Models\OtherReceiptType;
 use App\Models\PaymentApplication;
 use App\Models\PaymentApplicationHistory;
 use App\Models\PaymentMethod;
+use App\Models\ReasonCode;
 use App\Models\Receipt;
+use App\Models\ReceiptReprint;
 use App\Models\ReceiptStatusHistory;
+use App\Models\ReceiptTender;
 use App\Models\ReceivableOpenItem;
 use App\Models\ReferenceCurrency;
+use App\Models\RemittanceVariance;
 use App\Models\Sale;
 use App\Support\AuditService;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 final class CollectionsService
 {
-    public function __construct(private readonly AuditService $audit, private readonly CashDocumentNumberService $numbers, private readonly CashMovementService $cash) {}
+    public function __construct(private readonly AuditService $audit, private readonly CashDocumentNumberService $numbers, private readonly CashMovementService $cash, private readonly CashTransferService $transfers) {}
 
     public function summary(Company $company): array
     {
@@ -41,7 +52,7 @@ final class CollectionsService
 
     public function listReceipts(Company $company, Request $request): array
     {
-        $query = Receipt::where('company_id', $company->id)->with(['customer', 'currency'])->when($request->filled('customer_id'), fn ($q) => $q->where('customer_id', $request->string('customer_id')))->when($request->filled('status'), fn ($q) => $q->where('status', $request->string('status')))->when($request->filled('q'), fn ($q) => $q->where(fn ($search) => $search->where('receipt_number', 'ilike', '%'.$request->string('q').'%')->orWhere('external_reference', 'ilike', '%'.$request->string('q').'%')->orWhereHas('customer', fn ($customer) => $customer->where('display_name', 'ilike', '%'.$request->string('q').'%'))))->latest('receipt_date')->latest('created_at');
+        $query = Receipt::where('company_id', $company->id)->with(['customer', 'currency'])->when($request->filled('customer_id'), fn ($q) => $q->where('customer_id', $request->string('customer_id')))->when($request->filled('receipt_type'), fn ($q) => $q->where('receipt_type', $request->string('receipt_type')))->when($request->filled('status'), fn ($q) => $q->where('status', $request->string('status')))->when($request->filled('q'), fn ($q) => $q->where(fn ($search) => $search->where('receipt_number', 'ilike', '%'.$request->string('q').'%')->orWhere('external_reference', 'ilike', '%'.$request->string('q').'%')->orWhereHas('customer', fn ($customer) => $customer->where('display_name', 'ilike', '%'.$request->string('q').'%'))))->latest('receipt_date')->latest('created_at');
         $perPage = min((int) $request->input('per_page', 25), 100);
         $items = $query->paginate($perPage);
 
@@ -52,13 +63,47 @@ final class CollectionsService
     {
         $this->validateHeader($input, $company);
         $receipt = DB::transaction(function () use ($input, $company, $request) {
-            $receipt = Receipt::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'receipt_number' => $this->numbers->next($company->id, 'receipt'), 'receipt_type' => $input['receipt_type'], 'receipt_date' => $input['receipt_date'], 'customer_id' => $input['customer_id'], 'source_sale_id' => $input['source_sale_id'] ?? null, 'currency_id' => $input['currency_id'], 'payer_name_snapshot' => $input['payer_name_snapshot'] ?? null, 'external_reference' => $input['external_reference'] ?? null, 'customer_reference' => $input['customer_reference'] ?? null, 'amount' => $input['amount'], 'status' => 'draft', 'application_status' => 'unapplied', 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key')]);
+            $receipt = Receipt::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'receipt_number' => $this->numbers->next($company->id, 'receipt'), 'receipt_type' => $input['receipt_type'], 'receipt_date' => $input['receipt_date'], 'customer_id' => $input['customer_id'], 'source_sale_id' => $input['source_sale_id'] ?? null, 'currency_id' => $input['currency_id'], 'payer_name_snapshot' => $input['payer_name_snapshot'] ?? null, 'external_reference' => $input['external_reference'] ?? null, 'customer_reference' => $input['customer_reference'] ?? null, 'amount' => $input['amount'], 'notes' => $input['notes'] ?? null, 'status' => 'draft', 'application_status' => 'unapplied', 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key')]);
             $this->replaceLines($receipt, $input, $company, $request);
             $this->history($receipt, null, 'draft', $company, $request);
 
             return $receipt->refresh();
         });
         $this->audit->record($request, 'collections.receipt.drafted', $receipt, $company->id, [], $this->safe($receipt), null, 'Receipt drafted', 'A customer collection receipt draft was created.');
+        $this->event('receipt.draft.created', $receipt, $company, $request, $receipt->receipt_date?->toDateString());
+
+        return $this->load($receipt);
+    }
+
+    public function otherReceiptTypes(Company $company)
+    {
+        $this->ensureOtherReceiptTypes($company);
+
+        return OtherReceiptType::where('company_id', $company->id)->where('active', true)->orderBy('name')->get();
+    }
+
+    public function createOtherDraft(array $input, Company $company, Request $request): Receipt
+    {
+        $this->ensureOtherReceiptTypes($company);
+        $type = OtherReceiptType::where('company_id', $company->id)->where('code', $input['other_receipt_type'])->where('active', true)->first();
+        if (! $type) {
+            throw new RegistryConflictException('The selected Other Receipt type is not active for this company.');
+        }
+        if ($type->requires_source_reference && ! trim((string) ($input['source_reference'] ?? ''))) {
+            throw new RegistryConflictException('The selected Other Receipt type requires a source reference.');
+        }
+        if ($type->source_module && ($input['source_module'] ?? $type->source_module) !== $type->source_module) {
+            throw new RegistryConflictException('The selected Other Receipt type requires its configured source module.');
+        }
+        $receipt = DB::transaction(function () use ($input, $company, $request, $type) {
+            $receipt = Receipt::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'receipt_number' => $this->numbers->next($company->id, 'receipt'), 'receipt_type' => 'other_receipt', 'other_receipt_type' => $type->code, 'receipt_date' => $input['receipt_date'], 'customer_id' => null, 'currency_id' => $input['currency_id'], 'counterparty_name' => $input['counterparty_name'], 'source_module' => $input['source_module'] ?? $type->source_module, 'source_reference' => $input['source_reference'] ?? null, 'classification' => $type->classification, 'business_purpose' => $input['business_purpose'], 'evidence_reference' => $input['evidence_reference'], 'external_reference' => $input['external_reference'] ?? null, 'amount' => $input['amount'], 'notes' => $input['notes'] ?? null, 'status' => 'draft', 'application_status' => 'not_applicable', 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key')]);
+            $this->replaceLines($receipt, ['tenders' => $input['tenders'], 'applications' => []], $company, $request);
+            $this->history($receipt, null, 'draft', $company, $request);
+
+            return $receipt->refresh();
+        });
+        $this->audit->record($request, 'collections.other-receipt.drafted', $receipt, $company->id, [], $this->safe($receipt), null, 'Other Receipt drafted', 'A controlled Other Receipt draft was created with source classification and evidence reference.');
+        $this->event('other-receipt.draft.created', $receipt, $company, $request, $receipt->receipt_date?->toDateString());
 
         return $this->load($receipt);
     }
@@ -130,6 +175,11 @@ final class CollectionsService
             return $locked->refresh();
         });
         $this->audit->record($request, 'collections.receipt.'.($action === 'cancel' ? 'voided' : $action), $result, $company->id, [], $this->safe($result), $reason, 'Receipt lifecycle', 'Receipt lifecycle status changed.');
+        if ($action === 'submit') {
+            $this->event('receipt.submitted', $result, $company, $request, $result->receipt_date?->toDateString());
+        } elseif ($action === 'cancel') {
+            $this->event('receipt.voided', $result, $company, $request, $result->receipt_date?->toDateString());
+        }
 
         return $this->load($result);
     }
@@ -146,22 +196,29 @@ final class CollectionsService
             $applications = $locked->applications()->orderBy('receivable_open_item_id')->lockForUpdate()->get();
             $this->validateTotals($locked, $tenders, $applications);
             $currency = ReferenceCurrency::whereKey($locked->currency_id)->where('company_id', $company->id)->firstOrFail();
-            $receivableTitle = $this->postingAccount($company, 'asset', ['receivable']);
-            $advanceTitle = $locked->unapplied_amount > 0 ? $this->postingAccount($company, 'liability', ['advance', 'deposit', 'unapplied', 'customer']) : null;
+            $isOtherReceipt = $locked->receipt_type === 'other_receipt';
+            $receivableTitle = $isOtherReceipt ? null : $this->postingAccount($company, 'asset', ['receivable']);
+            $advanceTitle = ! $isOtherReceipt && $locked->unapplied_amount > 0 ? $this->postingAccount($company, 'liability', ['advance', 'deposit', 'unapplied', 'customer']) : null;
+            $otherTitle = $isOtherReceipt ? $this->otherReceiptPostingAccount($company, (string) $locked->classification) : null;
             $businessId = (string) Str::uuid();
-            DB::table('business_transactions')->insert(['id' => $businessId, 'company_id' => $company->id, 'transaction_type' => 'customer_receipt', 'status' => 'posted', 'actor_id' => $request->user()?->id, 'business_date' => $locked->receipt_date, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_key' => $request->header('Idempotency-Key'), 'created_at' => now(), 'updated_at' => now()]);
+            $transactionType = $isOtherReceipt ? 'other_receipt' : 'customer_receipt';
+            DB::table('business_transactions')->insert(['id' => $businessId, 'company_id' => $company->id, 'transaction_type' => $transactionType, 'status' => 'posted', 'actor_id' => $request->user()?->id, 'business_date' => $locked->receipt_date, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_key' => $request->header('Idempotency-Key'), 'created_at' => now(), 'updated_at' => now()]);
             $accountingId = (string) Str::uuid();
-            DB::table('accounting_transactions')->insert(['id' => $accountingId, 'business_transaction_id' => $businessId, 'company_id' => $company->id, 'transaction_type' => 'customer_receipt', 'status' => 'posted', 'business_date' => $locked->receipt_date, 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'created_at' => now(), 'updated_at' => now()]);
+            DB::table('accounting_transactions')->insert(['id' => $accountingId, 'business_transaction_id' => $businessId, 'company_id' => $company->id, 'transaction_type' => $transactionType, 'status' => 'posted', 'business_date' => $locked->receipt_date, 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'created_at' => now(), 'updated_at' => now()]);
             $remainingApplied = (string) $locked->applied_total;
             foreach ($tenders as $tender) {
                 $appliedPart = min((float) $remainingApplied, (float) $tender->amount);
                 $unappliedPart = (float) $tender->amount - $appliedPart;
                 $offsets = [];
-                if ($appliedPart > 0) {
-                    $offsets[] = ['account_title_id' => $receivableTitle->id, 'amount' => number_format($appliedPart, 6, '.', ''), 'description' => 'Customer Receipt applied to receivable'];
-                }
-                if ($unappliedPart > 0) {
-                    $offsets[] = ['account_title_id' => $advanceTitle->id, 'amount' => number_format($unappliedPart, 6, '.', ''), 'description' => 'Customer Receipt customer advance'];
+                if ($isOtherReceipt) {
+                    $offsets[] = ['account_title_id' => $otherTitle->id, 'amount' => (string) $tender->amount, 'description' => 'Controlled Other Receipt inflow'];
+                } else {
+                    if ($appliedPart > 0) {
+                        $offsets[] = ['account_title_id' => $receivableTitle->id, 'amount' => number_format($appliedPart, 6, '.', ''), 'description' => 'Customer Receipt applied to receivable'];
+                    }
+                    if ($unappliedPart > 0) {
+                        $offsets[] = ['account_title_id' => $advanceTitle->id, 'amount' => number_format($unappliedPart, 6, '.', ''), 'description' => 'Customer Receipt customer advance'];
+                    }
                 }
                 $account = CashAccount::whereKey($tender->cash_account_id)->where('company_id', $company->id)->with('currency')->lockForUpdate()->firstOrFail();
                 $method = PaymentMethod::whereKey($tender->payment_method_id)->where('company_id', $company->id)->where('status', 'active')->firstOrFail();
@@ -193,7 +250,7 @@ final class CollectionsService
                     }
                 }
             }
-            if ((float) $locked->unapplied_amount > 0) {
+            if (! $isOtherReceipt && (float) $locked->unapplied_amount > 0) {
                 CustomerUnappliedReceipt::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'receipt_id' => $locked->id, 'customer_id' => $locked->customer_id, 'currency_id' => $locked->currency_id, 'original_amount' => $locked->unapplied_amount, 'available_amount' => $locked->unapplied_amount, 'received_date' => $locked->receipt_date, 'status' => 'available']);
             }
             $locked->update(['status' => 'posted', 'posted_by' => $request->user()?->id, 'posted_at' => now(), 'business_transaction_id' => $businessId, 'accounting_transaction_id' => $accountingId, 'version' => $locked->version + 1]);
@@ -201,7 +258,15 @@ final class CollectionsService
 
             return $locked->refresh();
         });
-        $this->audit->record($request, 'collections.receipt.posted', $result, $company->id, [], $this->safe($result), null, 'Receipt posted', 'Receipt, customer applications, MDS-700 cash effects, and balanced accounting were posted atomically.');
+        $this->audit->record($request, $result->receipt_type === 'other_receipt' ? 'collections.other-receipt.posted' : 'collections.receipt.posted', $result, $company->id, [], $this->safe($result), null, 'Receipt posted', 'Receipt, governed applications where applicable, MDS-700 cash effects, and balanced accounting were posted atomically.');
+        $this->event($result->receipt_type === 'other_receipt' ? 'other-receipt.posted' : 'receipt.posted', $result, $company, $request, $result->receipt_date?->toDateString());
+        if ($result->receipt_type !== 'other_receipt' && (float) $result->unapplied_amount > 0) {
+            $this->event('advance.unapplied.created', $result, $company, $request, $result->receipt_date?->toDateString());
+        }
+        if ($result->receipt_type !== 'other_receipt' && (float) $result->applied_total > 0) {
+            $this->event('payment.applied', $result, $company, $request, $result->receipt_date?->toDateString());
+            $this->event((float) $result->unapplied_amount > 0 ? 'receipt.partially.applied' : 'receipt.fully.applied', $result, $company, $request, $result->receipt_date?->toDateString());
+        }
 
         return $this->load($result);
     }
@@ -224,6 +289,19 @@ final class CollectionsService
             $item->version++;
             $item->last_calculated_at = now();
             $item->save();
+            if ($item->source_sale_id) {
+                $sourceSale = Sale::whereKey($item->source_sale_id)->where('company_id', $company->id)->lockForUpdate()->first();
+                if ($sourceSale) {
+                    $sourceSale->paid_amount = bcadd((string) $sourceSale->paid_amount, (string) $input['amount'], 6);
+                    $sourceSale->remaining_amount = bcsub((string) $sourceSale->remaining_amount, (string) $input['amount'], 6);
+                    if (bccomp((string) $sourceSale->remaining_amount, '0', 6) < 0) {
+                        $sourceSale->remaining_amount = '0';
+                    }
+                    $sourceSale->settlement_status = $item->settlement_status;
+                    $sourceSale->version++;
+                    $sourceSale->save();
+                }
+            }
             $unapplied->applied_later_amount = bcadd((string) $unapplied->applied_later_amount, (string) $input['amount'], 6);
             $unapplied->available_amount = bcsub((string) $unapplied->available_amount, (string) $input['amount'], 6);
             $unapplied->status = (float) $unapplied->available_amount <= 0 ? 'fully_applied' : 'available';
@@ -239,6 +317,7 @@ final class CollectionsService
             return $app->refresh();
         });
         $this->audit->record($request, 'collections.application.created', $result, $company->id, [], $result->toArray(), null, 'Payment applied', 'Previously unapplied customer credit was applied to an MDS-200 receivable open item.');
+        $this->event('payment.applied', $result, $company, $request, $result->application_date?->toDateString());
 
         return $result->load(['receipt', 'receivable', 'customer']);
     }
@@ -261,6 +340,20 @@ final class CollectionsService
             $item->last_calculated_at = now();
             $item->save();
             $app->update(['status' => 'reversed', 'reversed_by' => $request->user()?->id, 'reversed_at' => now(), 'reversal_reason' => $reason, 'version' => $app->version + 1]);
+            if ($item->source_sale_id) {
+                $sourceSale = Sale::whereKey($item->source_sale_id)->where('company_id', $company->id)->lockForUpdate()->first();
+                if ($sourceSale) {
+                    $sourceSale->paid_amount = bcsub((string) $sourceSale->paid_amount, (string) $app->amount, 6);
+                    if (bccomp((string) $sourceSale->paid_amount, '0', 6) < 0) {
+                        $sourceSale->paid_amount = '0';
+                    }
+                    $sourceSale->remaining_amount = bcadd((string) $sourceSale->remaining_amount, (string) $app->amount, 6);
+                    $sourceSale->settlement_status = $item->settlement_status;
+                    $sourceSale->version++;
+                    $sourceSale->save();
+                }
+            }
+            PaymentApplication::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'receipt_id' => $app->receipt_id, 'customer_id' => $app->customer_id, 'receivable_open_item_id' => $app->receivable_open_item_id, 'currency_id' => $app->currency_id, 'amount' => $app->amount, 'application_date' => now()->toDateString(), 'status' => 'reversed', 'original_application_id' => $app->id, 'reversed_by' => $request->user()?->id, 'reversed_at' => now(), 'reversal_reason' => $reason, 'version' => 1, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key')]);
             if ($receipt->status === 'posted') {
                 $receipt->applied_total = bcsub((string) $receipt->applied_total, (string) $app->amount, 6);
                 $receipt->unapplied_amount = bcadd((string) $receipt->unapplied_amount, (string) $app->amount, 6);
@@ -274,6 +367,7 @@ final class CollectionsService
             return $app->refresh();
         });
         $this->audit->record($request, 'collections.application.reversed', $result, $company->id, [], $result->toArray(), $reason, 'Payment application reversed', 'The linked application was reversed and the MDS-200 open item was restored.');
+        $this->event('application.reversed', $result, $company, $request, $result->application_date?->toDateString());
 
         return $result;
     }
@@ -305,7 +399,329 @@ final class CollectionsService
 
     public function load(Receipt $receipt): Receipt
     {
-        return $receipt->load(['customer', 'currency', 'tenders.paymentMethod', 'tenders.cashAccount', 'applications.receivable', 'unapplied.customer', 'unapplied.currency', 'statusHistory']);
+        return $receipt->load(['customer', 'currency', 'tenders.paymentMethod', 'tenders.cashAccount', 'applications.receivable', 'unapplied.customer', 'unapplied.currency', 'statusHistory', 'reprints', 'activities']);
+    }
+
+    public function printable(Receipt $receipt, Company $company, Request $request): Receipt
+    {
+        $this->scope($receipt, $company);
+        if (! in_array($receipt->status, ['posted', 'reversed', 'voided', 'failed'], true)) {
+            throw new RegistryConflictException('Only an issued receipt can be printed.');
+        }
+
+        $printable = $receipt->load([
+            'customer',
+            'currency',
+            'sourceSale.branch',
+            'tenders.paymentMethod',
+            'tenders.cashAccount',
+            'applications.receivable',
+            'reprints',
+            'postedBy',
+            'createdBy',
+        ]);
+        $reprintId = $request->string('reprint_id')->toString();
+        $reprint = $reprintId !== '' ? $printable->reprints->firstWhere('id', $reprintId) : null;
+        if ($reprintId !== '' && ! $reprint) {
+            throw new RegistryConflictException('The requested reprint record is not associated with this Receipt.');
+        }
+        $printable->setAttribute('print_company', $company);
+        $printable->setAttribute('print_reprint', $reprint);
+
+        return $printable;
+    }
+
+    public function reprint(Receipt $receipt, array $input, Company $company, Request $request): ReceiptReprint
+    {
+        $this->scope($receipt, $company);
+        if (! in_array($receipt->status, ['posted', 'reversed', 'voided', 'failed'], true)) {
+            throw new RegistryConflictException('Only an issued receipt may be reprinted.');
+        }
+        $reprint = ReceiptReprint::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'receipt_id' => $receipt->id, 'reason' => $input['reason'], 'channel' => $input['channel'] ?? 'screen', 'actor_id' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key')]);
+        $this->audit->record($request, 'collections.receipt.reprinted', $receipt, $company->id, [], ['receipt_id' => $receipt->id, 'reprint_id' => $reprint->id, 'channel' => $reprint->channel], $reprint->reason, 'Receipt reprinted', 'A receipt copy was prepared without creating a financial effect.');
+        $this->event('receipt.reprinted', $receipt, $company, $request, $receipt->receipt_date?->toDateString());
+
+        return $reprint->refresh();
+    }
+
+    public function failTender(string $tenderId, array $input, Company $company, Request $request): ReceiptTender
+    {
+        $tender = DB::transaction(function () use ($tenderId, $input, $company, $request) {
+            $tender = ReceiptTender::where('company_id', $company->id)->whereKey($tenderId)->lockForUpdate()->firstOrFail();
+            $receipt = Receipt::where('company_id', $company->id)->whereKey($tender->receipt_id)->lockForUpdate()->firstOrFail();
+            if ($receipt->status !== 'posted') {
+                throw new RegistryConflictException('Only a posted receipt can have a failed payment instrument recorded.');
+            }
+            if (in_array($tender->instrument_status, ['failed', 'returned', 'reversed'], true)) {
+                throw new RegistryConflictException('This payment instrument has already been corrected.');
+            }
+            $tender->update(['instrument_status' => 'failed', 'clearing_status' => 'failed', 'failed_at' => now(), 'failed_by' => $request->user()?->id, 'failure_reason' => $input['reason'], 'failure_reference' => $input['failure_reference'] ?? null, 'version' => $tender->version + 1]);
+            $this->audit->record($request, 'collections.payment-instrument.failed', $tender, $company->id, [], ['tender_id' => $tender->id, 'receipt_id' => $receipt->id, 'status' => 'failed'], $input['reason'], 'Payment instrument failed', 'A payment instrument was marked failed and requires governed receipt correction/recovery review.');
+
+            return $tender->refresh();
+        });
+        $receipt = Receipt::where('company_id', $company->id)->whereKey($tender->receipt_id)->firstOrFail();
+        if ($receipt->status === 'posted') {
+            $this->reverse($receipt, 'Payment instrument failed: '.$input['reason'], $company, $request);
+            $failed = $receipt->fresh();
+            $this->history($failed, 'reversed', 'failed', $company, $request, $input['reason']);
+            $failed->update(['status' => 'failed', 'correction_reason' => $input['reason'], 'version' => $failed->version + 1]);
+        }
+
+        $this->event('payment.instrument.failed', $failed ?? $receipt, $company, $request, $receipt->receipt_date?->toDateString());
+
+        return $tender->fresh();
+    }
+
+    public function listActivities(Company $company, Request $request): array
+    {
+        $query = CollectionActivity::where('company_id', $company->id)->with(['customer', 'receipt', 'receivable'])->latest('occurred_at')->latest('created_at');
+        if ($request->filled('customer_id')) {
+            $query->where('customer_id', $request->string('customer_id'));
+        }
+        if ($request->filled('status')) {
+            $query->where('status', $request->string('status'));
+        }
+        $page = $query->paginate(min((int) $request->input('per_page', 25), 100));
+
+        return [$page->getCollection(), ['pagination' => ['total' => $page->total(), 'per_page' => $page->perPage(), 'current_page' => $page->currentPage(), 'last_page' => $page->lastPage()]]];
+    }
+
+    public function createActivity(array $input, Company $company, Request $request): CollectionActivity
+    {
+        if (! empty($input['customer_id']) && ! BusinessPartner::where('company_id', $company->id)->whereKey($input['customer_id'])->exists()) {
+            throw new RegistryConflictException('The activity customer is outside the current company.');
+        }
+        $activity = CollectionActivity::create(array_merge($input, ['id' => (string) Str::uuid(), 'company_id' => $company->id, 'occurred_at' => $input['occurred_at'] ?? now(), 'created_by' => $request->user()?->id, 'updated_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key')]));
+        $this->audit->record($request, 'collections.activity.recorded', $activity, $company->id, [], $activity->toArray(), null, 'Collection activity recorded', 'A non-financial collection follow-up activity was recorded.');
+        $this->event('collection.activity.recorded', $activity, $company, $request, $activity->occurred_at?->toDateString());
+
+        return $activity->load(['customer', 'receipt', 'receivable']);
+    }
+
+    public function createRemittance(array $input, Company $company, Request $request): CashRemittance
+    {
+        $submittedAmounts = $input['submitted_amounts'] ?? [];
+        $remittance = DB::transaction(function () use ($input, $company, $request, $submittedAmounts) {
+            $tenders = ReceiptTender::where('company_id', $company->id)->whereIn('id', $input['tender_ids'])->where('remittance_status', 'unremitted')->whereHas('receipt', fn ($q) => $q->where('status', 'posted')->where('currency_id', $input['currency_id']))->with(['receipt', 'cashAccount'])->lockForUpdate()->get();
+            if ($tenders->count() !== count(array_unique($input['tender_ids']))) {
+                throw new RegistryConflictException('Every selected tender must be a posted, same-currency, unremitted receipt tender.');
+            }
+            $expected = (string) $tenders->sum('amount');
+            $submitted = '0';
+            foreach ($tenders as $tender) {
+                $submitted = bcadd($submitted, (string) ($submittedAmounts[$tender->id] ?? $tender->amount), 6);
+            }
+            $sourceIds = $tenders->pluck('cash_account_id')->filter()->unique()->values();
+            if ($sourceIds->count() !== 1) {
+                throw new RegistryConflictException('A Remittance transfer requires exactly one source Cash Account.');
+            }
+            $destinationId = $input['destination_cash_account_id'] ?? null;
+            if ($destinationId !== null && (string) $sourceIds->first() === (string) $destinationId) {
+                throw new RegistryConflictException('The Remittance source and destination Cash Accounts must be different.');
+            }
+            $remittance = CashRemittance::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'remittance_number' => $this->numbers->next($company->id, 'remittance'), 'cashier_id' => $input['cashier_id'] ?? $request->user()?->id, 'collector_id' => $input['collector_id'] ?? null, 'branch_id' => $input['branch_id'] ?? null, 'currency_id' => $input['currency_id'], 'source_cash_account_id' => $sourceIds->first(), 'destination_cash_account_id' => $destinationId, 'remittance_date' => $input['remittance_date'], 'period_start' => $input['period_start'] ?? null, 'period_end' => $input['period_end'] ?? null, 'status' => 'draft', 'expected_amount' => $expected, 'submitted_amount' => $submitted, 'difference_amount' => bcsub($submitted, $expected, 6), 'evidence_reference' => $input['evidence_reference'] ?? null, 'deposit_reference' => $input['deposit_reference'] ?? null, 'reason' => $input['reason'] ?? null, 'prepared_by' => $request->user()?->id, 'prepared_at' => now(), 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key')]);
+            foreach ($tenders as $tender) {
+                $actual = (string) ($submittedAmounts[$tender->id] ?? $tender->amount);
+                CashRemittanceLine::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'cash_remittance_id' => $remittance->id, 'receipt_tender_id' => $tender->id, 'expected_amount' => $tender->amount, 'submitted_amount' => $actual, 'difference_amount' => bcsub($actual, (string) $tender->amount, 6)]);
+            }
+
+            return $remittance;
+        });
+        $this->audit->record($request, 'collections.remittance.drafted', $remittance, $company->id, [], $remittance->toArray(), null, 'Cash remittance prepared', 'A cash remittance was prepared from accountable posted receipt tenders.');
+        $this->event('remittance.created', $remittance, $company, $request, $remittance->remittance_date?->toDateString());
+
+        return $remittance->load(['lines.tender.receipt', 'variances', 'sourceAccount', 'destinationAccount']);
+    }
+
+    public function transitionRemittance(CashRemittance $remittance, string $action, array $input, Company $company, Request $request): CashRemittance
+    {
+        if ((int) $remittance->company_id !== (int) $company->id) {
+            throw new RegistryConflictException('The remittance is outside the current company scope.');
+        }
+        $result = DB::transaction(function () use ($remittance, $action, $input, $company, $request) {
+            $locked = CashRemittance::whereKey($remittance->id)->where('company_id', $company->id)->lockForUpdate()->with(['lines.tender.cashAccount', 'variances', 'transfer'])->firstOrFail();
+            $updates = ['version' => $locked->version + 1];
+            $from = $locked->status;
+            $actor = $request->user()?->id;
+            if ($action === 'submit' && $locked->status === 'draft') {
+                $updates += ['status' => 'submitted', 'submitted_by' => $actor, 'submitted_at' => now()];
+            } elseif ($action === 'verify' && $locked->status === 'submitted') {
+                if ((int) $locked->prepared_by === (int) $actor) {
+                    throw new RegistryConflictException('The preparer cannot verify the same remittance.');
+                } $updates += ['status' => abs((float) $locked->difference_amount) > 0 ? 'with_variance' : 'verified', 'verified_by' => $actor, 'verified_at' => now()];
+            } elseif ($action === 'accept' && in_array($locked->status, ['verified', 'with_variance'], true)) {
+                $transfer = $locked->destination_cash_account_id ? $this->postRemittanceTransfer($locked, $company, $request) : null;
+                $updates += ['status' => 'accepted', 'accepted_by' => $actor, 'accepted_at' => now(), 'cash_transfer_document_id' => $transfer?->id, 'transfer_posted_at' => $transfer?->posted_at ?? ($transfer ? now() : null)];
+            } elseif ($action === 'reverse' && $locked->status === 'accepted') {
+                $this->requireReason($input['reason'] ?? null);
+                if ($locked->transfer) {
+                    $this->transfers->reverse($locked->transfer, (string) $input['reason'], $company, $request);
+                }
+                $updates += ['status' => 'reversed', 'reversed_by' => $actor, 'reversed_at' => now(), 'reversal_reason' => $input['reason']];
+            } elseif ($action === 'reject' && in_array($locked->status, ['submitted', 'verified', 'with_variance'], true)) {
+                $updates += ['status' => 'rejected', 'reason' => $input['reason'] ?? null];
+            } else {
+                throw new RegistryConflictException('The remittance cannot take this action from its current status.');
+            }
+            $locked->update($updates);
+            if ($action === 'verify' && abs((float) $locked->difference_amount) > 0) {
+                RemittanceVariance::firstOrCreate(['cash_remittance_id' => $locked->id], ['id' => (string) Str::uuid(), 'company_id' => $company->id, 'expected_amount' => $locked->expected_amount, 'actual_amount' => $locked->submitted_amount, 'difference_amount' => $locked->difference_amount, 'status' => 'open', 'reason' => $input['reason'] ?? null, 'evidence_reference' => $input['evidence_reference'] ?? $locked->evidence_reference, 'owner_id' => $locked->collector_id, 'correlation_id' => $request->attributes->get('correlation_id')]);
+            }
+            if ($action === 'accept') {
+                foreach ($locked->lines as $line) {
+                    $line->tender->update(['remittance_status' => 'remitted', 'version' => $line->tender->version + 1]);
+                }
+            } elseif ($action === 'reverse') {
+                foreach ($locked->lines as $line) {
+                    $line->tender->update(['remittance_status' => 'unremitted', 'version' => $line->tender->version + 1]);
+                }
+            }
+            $this->audit->record($request, 'collections.remittance.'.$action, $locked, $company->id, ['status' => $from], $locked->toArray(), $input['reason'] ?? null, 'Cash remittance '.$action, 'Cash remittance segregation and variance state was updated.');
+
+            return $locked->refresh();
+        });
+
+        $eventName = match ($action) {
+            'submit' => 'remittance.submitted',
+            'verify' => 'remittance.verified',
+            'accept' => 'remittance.accepted',
+            'reverse' => 'remittance.reversed',
+            default => null,
+        };
+        if ($eventName) {
+            $this->event($eventName, $result, $company, $request, $result->remittance_date?->toDateString());
+            if ($action === 'verify' && abs((float) $result->difference_amount) > 0) {
+                $this->event('remittance.variance.identified', $result, $company, $request, $result->remittance_date?->toDateString());
+            }
+            if ($action === 'accept' && $result->cash_transfer_document_id) {
+                $this->event('remittance.posted', $result, $company, $request, $result->remittance_date?->toDateString());
+            }
+        }
+
+        return $result->load(['lines.tender.receipt', 'variances', 'sourceAccount', 'destinationAccount', 'transfer.legs.movement']);
+    }
+
+    public function remittances(Company $company, Request $request): array
+    {
+        $page = CashRemittance::where('company_id', $company->id)->with(['lines.tender.receipt', 'variances', 'sourceAccount', 'destinationAccount', 'transfer.legs'])->latest('remittance_date')->paginate(min((int) $request->input('per_page', 25), 100));
+
+        return [$page->getCollection(), ['pagination' => ['total' => $page->total(), 'per_page' => $page->perPage(), 'current_page' => $page->currentPage(), 'last_page' => $page->lastPage()]]];
+    }
+
+    public function showRemittance(string $id, Company $company): CashRemittance
+    {
+        return CashRemittance::where('company_id', $company->id)->whereKey($id)->with(['lines.tender.receipt', 'variances', 'sourceAccount', 'destinationAccount', 'transfer.legs.movement'])->firstOrFail();
+    }
+
+    public function resolveVariance(string $id, array $input, Company $company, Request $request): RemittanceVariance
+    {
+        if (! trim((string) ($input['resolution'] ?? ''))) {
+            throw new RegistryConflictException('A remittance variance resolution is required.');
+        }
+        $variance = DB::transaction(function () use ($id, $input, $company, $request) {
+            $variance = RemittanceVariance::where('company_id', $company->id)->whereKey($id)->lockForUpdate()->firstOrFail();
+            if (! in_array($variance->status, ['open', 'under_review', 'explained'], true)) {
+                throw new RegistryConflictException('This remittance variance is no longer open for resolution.');
+            }
+            $variance->update(['status' => 'approved', 'resolution' => $input['resolution'], 'evidence_reference' => $input['evidence_reference'] ?? $variance->evidence_reference, 'approved_by' => $request->user()?->id, 'approved_at' => now(), 'version' => $variance->version + 1]);
+            $this->audit->record($request, 'collections.remittance.variance.resolved', $variance, $company->id, [], $variance->toArray(), $input['resolution'], 'Remittance variance resolved', 'A remittance variance explanation and evidence reference were recorded.');
+            $this->event('remittance.variance.resolved', $variance, $company, $request, $variance->remittance?->remittance_date?->toDateString());
+
+            return $variance->refresh();
+        });
+
+        return $variance->load('remittance');
+    }
+
+    public function report(string $report, Company $company, Request $request): array
+    {
+        $allowed = ['daily_collections', 'receipt_register', 'collection_history', 'unapplied', 'payment_method_summary', 'remittance_register', 'remittance_variance', 'other_receipts'];
+        if (! in_array($report, $allowed, true)) {
+            throw new RegistryConflictException('The requested Collections report is not available.');
+        }
+        $from = $request->date('from')?->toDateString();
+        $to = $request->date('to')?->toDateString();
+        $receipts = Receipt::where('company_id', $company->id)->when($from, fn ($q) => $q->whereDate('receipt_date', '>=', $from))->when($to, fn ($q) => $q->whereDate('receipt_date', '<=', $to));
+
+        return match ($report) {
+            'daily_collections', 'receipt_register' => ['report' => $report, 'rows' => (clone $receipts)->whereIn('status', ['posted', 'reversed', 'failed'])->with(['customer', 'currency', 'tenders'])->latest('receipt_date')->get()->map(fn ($receipt) => ['id' => $receipt->id, 'receipt_number' => $receipt->receipt_number, 'date' => $receipt->receipt_date?->toDateString(), 'customer' => $receipt->customer?->display_name, 'type' => $receipt->receipt_type, 'amount' => (string) $receipt->amount, 'status' => $receipt->status, 'tenders' => $receipt->tenders->map(fn ($tender) => ['method' => $tender->paymentMethod?->name, 'amount' => (string) $tender->amount])])],
+            'collection_history' => ['report' => $report, 'rows' => ReceiptStatusHistory::where('company_id', $company->id)->with('receipt')->latest()->get()->map(fn ($history) => ['receipt_id' => $history->receipt_id, 'receipt_number' => $history->receipt?->receipt_number, 'from' => $history->from_status, 'to' => $history->to_status, 'reason' => $history->reason, 'created_at' => $history->created_at?->toISOString()])],
+            'unapplied' => ['report' => $report, 'rows' => CustomerUnappliedReceipt::where('company_id', $company->id)->with(['customer', 'receipt'])->get()->map(fn ($item) => ['receipt_id' => $item->receipt_id, 'receipt_number' => $item->receipt?->receipt_number, 'customer' => $item->customer?->display_name, 'available_amount' => (string) $item->available_amount, 'status' => $item->status])],
+            'payment_method_summary' => ['report' => $report, 'rows' => ReceiptTender::where('company_id', $company->id)->whereHas('receipt', fn ($q) => $q->where('status', 'posted'))->with('paymentMethod')->get()->groupBy('payment_method_id')->map(fn ($group) => ['payment_method_id' => $group->first()->payment_method_id, 'payment_method' => $group->first()->paymentMethod?->name, 'count' => $group->count(), 'amount' => (string) $group->sum('amount')])->values()],
+            'remittance_register' => ['report' => $report, 'rows' => CashRemittance::where('company_id', $company->id)->with('variances')->latest('remittance_date')->get()],
+            'remittance_variance' => ['report' => $report, 'rows' => RemittanceVariance::where('company_id', $company->id)->with('remittance')->latest()->get()],
+            'other_receipts' => ['report' => $report, 'rows' => (clone $receipts)->where('receipt_type', 'other_receipt')->get()],
+        };
+    }
+
+    private function postRemittanceTransfer(CashRemittance $remittance, Company $company, Request $request): CashTransferDocument
+    {
+        if ($remittance->cash_transfer_document_id) {
+            throw new RegistryConflictException('This Remittance is already linked to an MDS-700 Transfer.');
+        }
+        if ($remittance->status === 'with_variance' && ! $remittance->variances->contains(fn ($variance) => $variance->status === 'approved')) {
+            throw new RegistryConflictException('Resolve the Remittance variance before posting its MDS-700 Transfer.', ['variance' => true]);
+        }
+        if ((float) $remittance->submitted_amount <= 0) {
+            throw new RegistryConflictException('A Remittance Transfer requires a positive approved actual amount.');
+        }
+
+        $sourceId = $remittance->source_cash_account_id ?: $remittance->lines->pluck('tender.cash_account_id')->filter()->unique()->first();
+        $destinationId = $remittance->destination_cash_account_id;
+        $source = $sourceId ? CashAccount::where('company_id', $company->id)->whereKey($sourceId)->with('currency')->first() : null;
+        $destination = $destinationId ? CashAccount::where('company_id', $company->id)->whereKey($destinationId)->with('currency')->first() : null;
+        if (! $source || ! $destination) {
+            throw new RegistryConflictException('The Remittance source and destination Cash Accounts must belong to the current company.');
+        }
+        if ((string) $source->currency_id !== (string) $destination->currency_id || (string) $source->currency_id !== (string) $remittance->currency_id) {
+            throw new RegistryConflictException('Remittance Transfer accounts must use the Remittance currency.');
+        }
+        if ((string) $source->id === (string) $destination->id) {
+            throw new RegistryConflictException('The Remittance source and destination Cash Accounts must be different.');
+        }
+        $reason = ReasonCode::where('company_id', $company->id)->where('domain', 'TRANSFER')->where('status', 'active')->orderBy('code')->first();
+        if (! $reason) {
+            throw new RegistryConflictException('An active TRANSFER Reason Code is required before a Remittance can post.', ['dependency' => 'reason_code']);
+        }
+
+        $transfer = $this->transfers->create([
+            'purpose' => 'INTERNAL_TRANSFER',
+            'source_cash_account_id' => $source->id,
+            'destination_cash_account_id' => $destination->id,
+            'currency_id' => $remittance->currency_id,
+            'amount' => $remittance->submitted_amount,
+            'business_date' => $remittance->remittance_date?->toDateString(),
+            'reason_code_id' => $reason->id,
+            'external_reference' => $remittance->remittance_number,
+            'explanation' => 'MDS-300 Cash Remittance '.$remittance->remittance_number.' transfer between company Cash Accounts.',
+            'supporting_reference' => $remittance->evidence_reference ?: $remittance->deposit_reference,
+        ], $company, $request);
+
+        $preparedBy = $remittance->prepared_by ?: $transfer->prepared_by;
+        if ((int) $preparedBy === (int) $request->user()?->id) {
+            throw new RegistryConflictException('A Remittance Transfer requires a different approving Cash Account authority from its preparer.', ['segregation' => true]);
+        }
+        $transfer->update(['prepared_by' => $preparedBy, 'status' => 'submitted', 'submitted_by' => $request->user()?->id, 'submitted_at' => now(), 'submitted_version' => $transfer->version + 1, 'version' => $transfer->version + 1]);
+        $transfer = $this->transfers->approve($transfer->refresh(), $company, $request);
+
+        return $this->transfers->post($transfer, $company, $request);
+    }
+
+    private function ensureOtherReceiptTypes(Company $company): void
+    {
+        $types = [
+            ['OWNER_CONTRIBUTION', 'Owner contribution', 'equity', null, true, false],
+            ['LOAN_PROCEEDS', 'Loan proceeds', 'liability', null, true, true],
+            ['DEPOSIT_REFUND', 'Deposit refund', 'other_income', null, true, true],
+            ['INTEREST_INCOME', 'Interest income', 'income', null, true, true],
+            ['INSURANCE_PROCEEDS', 'Insurance proceeds', 'other_income', null, true, true],
+            ['ASSET_SALE_PROCEEDS', 'Asset sale proceeds', 'other_income', 'asset', true, true],
+            ['OTHER_AUTHORIZED_INFLOW', 'Other authorized inflow', 'other_income', null, true, true],
+        ];
+        foreach ($types as [$code, $name, $classification, $sourceModule, $requiresCounterparty, $requiresReference]) {
+            OtherReceiptType::firstOrCreate(['company_id' => $company->id, 'code' => $code], ['id' => (string) Str::uuid(), 'name' => $name, 'classification' => $classification, 'source_module' => $sourceModule, 'requires_counterparty' => $requiresCounterparty, 'requires_source_reference' => $requiresReference, 'requires_approval' => true, 'active' => true, 'version' => 1]);
+        }
     }
 
     private function validateHeader(array $input, Company $company): void
@@ -336,6 +752,14 @@ final class CollectionsService
             } $tenderTotal = bcadd($tenderTotal, (string) $tender['amount'], 6);
             $receipt->tenders()->create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'payment_method_id' => $method->id, 'cash_account_id' => $account->id, 'currency_id' => $receipt->currency_id, 'amount' => $tender['amount'], 'instrument_status' => 'not_applicable', 'clearing_status' => $method->clearing_behavior === 'direct' ? 'not_applicable' : 'pending', 'external_reference' => $tender['external_reference'] ?? null, 'instrument_reference' => $tender['instrument_reference'] ?? null, 'value_date' => $tender['value_date'] ?? null, 'notes' => $tender['notes'] ?? null, 'created_by' => $request->user()?->id]);
         }
+        if ($receipt->receipt_type === 'other_receipt') {
+            if (! empty($input['applications'])) {
+                throw new RegistryConflictException('An Other Receipt cannot settle customer receivables.');
+            }
+            $receipt->update(['tender_total' => $tenderTotal, 'applied_total' => '0', 'unapplied_amount' => '0', 'application_status' => 'not_applicable']);
+
+            return;
+        }
         $appliedTotal = '0';
         foreach ($input['applications'] ?? [] as $application) {
             $item = ReceivableOpenItem::where('company_id', $company->id)->whereKey($application['receivable_open_item_id'])->where('customer_id', $receipt->customer_id)->where('currency_id', $receipt->currency_id)->where('remaining_amount', '>', 0)->first();
@@ -364,6 +788,13 @@ final class CollectionsService
     {
         $tenderTotal = (string) $tenders->sum('amount');
         $appTotal = (string) $applications->sum('amount');
+        if ($receipt->receipt_type === 'other_receipt') {
+            if (bccomp($tenderTotal, (string) $receipt->amount, 6) !== 0 || bccomp($appTotal, '0', 6) !== 0) {
+                throw new RegistryConflictException('Other Receipt tender totals must equal the receipt amount and cannot contain receivable applications.');
+            }
+
+            return;
+        }
         if (bccomp($tenderTotal, (string) $receipt->amount, 6) !== 0 || bccomp($appTotal, (string) $receipt->applied_total, 6) !== 0 || bccomp(bcadd($appTotal, (string) $receipt->unapplied_amount, 6), (string) $receipt->amount, 6) !== 0) {
             throw new RegistryConflictException('Receipt totals are inconsistent. Refresh and review the draft.');
         }
@@ -388,6 +819,18 @@ final class CollectionsService
         }
 
         return $account;
+    }
+
+    private function otherReceiptPostingAccount(Company $company, string $classification): AccountTitle
+    {
+        $terms = match ($classification) {
+            'equity' => ['capital', 'owner', 'contribution'],
+            'liability' => ['loan', 'payable', 'liability'],
+            'income' => ['interest', 'income'],
+            default => ['other income', 'other', 'miscellaneous'],
+        };
+
+        return $this->postingAccount($company, $classification === 'other_income' ? 'income' : $classification, $terms);
     }
 
     private function history(Receipt $receipt, ?string $from, string $to, Company $company, Request $request, ?string $reason = null): void
@@ -426,6 +869,19 @@ final class CollectionsService
         return ['id' => $receipt->id, 'receipt_number' => $receipt->receipt_number, 'status' => $receipt->status, 'amount' => (string) $receipt->amount, 'application_status' => $receipt->application_status];
     }
 
+    private function event(string $name, Model $record, Company $company, Request $request, ?string $businessDate = null): void
+    {
+        CollectionsLifecycleEvent::dispatch(
+            $name,
+            (int) $company->id,
+            $record::class,
+            (string) $record->getKey(),
+            $request->user()?->id,
+            $request->attributes->get('correlation_id'),
+            $businessDate,
+        );
+    }
+
     private function applicationAccounting(Company $company, Request $request, string $businessDate, string $amount, bool $reverse): void
     {
         $receivable = $this->postingAccount($company, 'asset', ['receivable']);
@@ -452,21 +908,62 @@ final class CollectionsService
             if ($locked->status !== 'posted') {
                 throw new RegistryConflictException('This receipt has already been reversed or is no longer posted.');
             }
-            if ($locked->applications()->whereIn('status', ['unapplied', 'partially_applied', 'fully_applied'])->exists()) {
-                throw new RegistryConflictException('Reverse or reapply the receipt applications before reversing the receipt.');
+            $activeApplications = $locked->applications()->whereIn('status', ['unapplied', 'partially_applied', 'fully_applied'])->lockForUpdate()->get();
+            foreach ($activeApplications as $application) {
+                $item = ReceivableOpenItem::whereKey($application->receivable_open_item_id)->where('company_id', $company->id)->lockForUpdate()->firstOrFail();
+                $item->applied_amount = bcsub((string) $item->applied_amount, (string) $application->amount, 6);
+                $item->remaining_amount = bcadd((string) $item->remaining_amount, (string) $application->amount, 6);
+                $item->settlement_status = (float) $item->applied_amount <= 0 ? 'unpaid' : 'partially_paid';
+                $item->version++;
+                $item->last_calculated_at = now();
+                $item->save();
+                if ($item->source_sale_id) {
+                    $sourceSale = Sale::whereKey($item->source_sale_id)->where('company_id', $company->id)->lockForUpdate()->first();
+                    if ($sourceSale) {
+                        $sourceSale->paid_amount = bcsub((string) $sourceSale->paid_amount, (string) $application->amount, 6);
+                        if (bccomp((string) $sourceSale->paid_amount, '0', 6) < 0) {
+                            $sourceSale->paid_amount = '0';
+                        }
+                        $sourceSale->remaining_amount = bcadd((string) $sourceSale->remaining_amount, (string) $application->amount, 6);
+                        $sourceSale->settlement_status = $item->settlement_status;
+                        $sourceSale->version++;
+                        $sourceSale->save();
+                    }
+                }
+                $application->update(['status' => 'reversed', 'reversed_by' => $request->user()?->id, 'reversed_at' => now(), 'reversal_reason' => $reason, 'version' => $application->version + 1]);
+                PaymentApplication::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'receipt_id' => $application->receipt_id, 'customer_id' => $application->customer_id, 'receivable_open_item_id' => $application->receivable_open_item_id, 'currency_id' => $application->currency_id, 'amount' => $application->amount, 'application_date' => now()->toDateString(), 'status' => 'reversed', 'original_application_id' => $application->id, 'reversed_by' => $request->user()?->id, 'reversed_at' => now(), 'reversal_reason' => $reason, 'version' => 1, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key')]);
+                $this->applicationHistory($application, 'fully_applied', 'reversed', $company, $request, $reason);
             }
             $currency = ReferenceCurrency::whereKey($locked->currency_id)->where('company_id', $company->id)->firstOrFail();
-            $advance = $this->postingAccount($company, 'liability', ['advance', 'deposit', 'unapplied', 'customer']);
+            $isOtherReceipt = $locked->receipt_type === 'other_receipt';
+            $advance = ! $isOtherReceipt ? $this->postingAccount($company, 'liability', ['advance', 'deposit', 'unapplied', 'customer']) : null;
+            $otherTitle = $isOtherReceipt ? $this->otherReceiptPostingAccount($company, (string) $locked->classification) : null;
             $businessId = (string) Str::uuid();
-            DB::table('business_transactions')->insert(['id' => $businessId, 'company_id' => $company->id, 'transaction_type' => 'customer_receipt_reversal', 'status' => 'posted', 'actor_id' => $request->user()?->id, 'business_date' => now()->toDateString(), 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_key' => $request->header('Idempotency-Key'), 'created_at' => now(), 'updated_at' => now()]);
+            $reversalType = $isOtherReceipt ? 'other_receipt_reversal' : 'customer_receipt_reversal';
+            DB::table('business_transactions')->insert(['id' => $businessId, 'company_id' => $company->id, 'transaction_type' => $reversalType, 'status' => 'posted', 'actor_id' => $request->user()?->id, 'business_date' => now()->toDateString(), 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_key' => $request->header('Idempotency-Key'), 'created_at' => now(), 'updated_at' => now()]);
             $accountingId = (string) Str::uuid();
-            DB::table('accounting_transactions')->insert(['id' => $accountingId, 'business_transaction_id' => $businessId, 'company_id' => $company->id, 'transaction_type' => 'customer_receipt_reversal', 'status' => 'posted', 'business_date' => now()->toDateString(), 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'created_at' => now(), 'updated_at' => now()]);
+            DB::table('accounting_transactions')->insert(['id' => $accountingId, 'business_transaction_id' => $businessId, 'company_id' => $company->id, 'transaction_type' => $reversalType, 'status' => 'posted', 'business_date' => now()->toDateString(), 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'created_at' => now(), 'updated_at' => now()]);
+            $remainingApplied = (string) $locked->applied_total;
             foreach ($locked->tenders()->orderBy('id')->lockForUpdate()->get() as $tender) {
                 $account = CashAccount::whereKey($tender->cash_account_id)->where('company_id', $company->id)->with('currency')->lockForUpdate()->firstOrFail();
                 $method = PaymentMethod::whereKey($tender->payment_method_id)->where('company_id', $company->id)->where('status', 'active')->firstOrFail();
                 $movement = CashMovement::where('company_id', $company->id)->where('source_record_type', Receipt::class)->where('source_record_id', $locked->id)->where('cash_account_id', $account->id)->where('amount', $tender->amount)->where('movement_status', 'posted')->whereNull('reversal_movement_id')->lockForUpdate()->firstOrFail();
-                $reversal = $this->cash->createReceiptReversalEffect($account, $company, (string) $tender->amount, $currency->code, now()->toDateString(), $accountingId, $advance->id, $locked, $method, $movement, $request);
+                $appliedPart = min((float) $remainingApplied, (float) $tender->amount);
+                $unappliedPart = (float) $tender->amount - $appliedPart;
+                $offsets = [];
+                if ($isOtherReceipt) {
+                    $offsets[] = ['account_title_id' => $otherTitle->id, 'amount' => (string) $tender->amount, 'description' => 'Other Receipt reversal restoration'];
+                } else {
+                    if ($appliedPart > 0) {
+                        $offsets[] = ['account_title_id' => $this->postingAccount($company, 'asset', ['receivable'])->id, 'amount' => number_format($appliedPart, 6, '.', ''), 'description' => 'Receipt reversal receivable restoration'];
+                    }
+                    if ($unappliedPart > 0) {
+                        $offsets[] = ['account_title_id' => $advance->id, 'amount' => number_format($unappliedPart, 6, '.', ''), 'description' => 'Receipt reversal customer advance restoration'];
+                    }
+                }
+                $reversal = $this->cash->createReceiptReversalEffectWithOffsets($account, $company, (string) $tender->amount, $currency->code, now()->toDateString(), $accountingId, $offsets, $locked, $method, $movement, $request);
                 $movement->update(['reversal_movement_id' => $reversal->id]);
+                $remainingApplied = bcsub($remainingApplied, (string) $appliedPart, 6);
             }
             if ($unapplied = CustomerUnappliedReceipt::where('receipt_id', $locked->id)->lockForUpdate()->first()) {
                 $unapplied->available_amount = '0';
@@ -480,6 +977,7 @@ final class CollectionsService
             return $locked->refresh();
         });
         $this->audit->record($request, 'collections.receipt.reversed', $result, $company->id, [], $this->safe($result), $reason, 'Receipt reversed', 'A posted receipt was reversed with linked MDS-700 and accounting counter-effects.');
+        $this->event('receipt.reversed', $result, $company, $request, $result->receipt_date?->toDateString());
 
         return $this->load($result);
     }

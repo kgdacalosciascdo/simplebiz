@@ -28,14 +28,12 @@ class SalesPhase4ATest extends TestCase
         $this->actingAs($user, 'sanctum')->withHeader('X-Company-ID', $company->id)->patchJson('/api/v1/sales/'.$saleId, ['version' => 1, 'notes' => 'Updated draft'])->assertOk()->assertJsonPath('data.notes', 'Updated draft');
     }
 
-    public function test_stock_and_cash_sales_are_blocked_at_phase_boundary(): void
+    public function test_stock_sales_require_inventory_location_and_cash_sales_remain_deferred(): void
     {
         [$user, $company, $customer, $service, $term] = $this->salesContext();
         $stock = ProductService::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'code' => 'PRD-001', 'normalized_code' => 'prd-001', 'name' => 'Stock item', 'record_type' => 'product', 'sellable' => true, 'stock_managed' => true, 'non_stock' => false, 'status' => 'active', 'version' => 1]);
         $client = $this->actingAs($user, 'sanctum')->withHeader('X-Company-ID', $company->id);
-        $stockSale = $client->postJson('/api/v1/sales', ['sale_type' => 'credit_sale', 'payment_basis' => 'credit', 'sale_date' => '2026-08-04', 'customer_id' => $customer->id, 'payment_term_id' => $term->id, 'lines' => [['product_service_id' => $stock->id, 'quantity' => 1, 'unit_price' => 100]]])->json('data.id');
-        Sale::whereKey($stockSale)->update(['status' => 'approved']);
-        $client->postJson('/api/v1/sales/'.$stockSale.'/post')->assertStatus(409)->assertJsonPath('errors.dependency', 'inventory');
+        $client->postJson('/api/v1/sales', ['sale_type' => 'credit_sale', 'payment_basis' => 'credit', 'sale_date' => '2026-08-04', 'customer_id' => $customer->id, 'payment_term_id' => $term->id, 'lines' => [['product_service_id' => $stock->id, 'quantity' => 1, 'unit_price' => 100]]])->assertStatus(409)->assertJsonPath('errors.dependency', 'inventory_location');
         $cashSale = $client->postJson('/api/v1/sales', ['sale_type' => 'cash_sale', 'payment_basis' => 'cash', 'sale_date' => '2026-08-04', 'lines' => [['product_service_id' => $service->id, 'quantity' => 1, 'unit_price' => 100, 'price_override_reason' => 'Tested dependency boundary']]])->json('data.id');
         Sale::whereKey($cashSale)->update(['status' => 'approved']);
         $client->postJson('/api/v1/sales/'.$cashSale.'/post')->assertStatus(409)->assertJsonPath('errors.dependency', 'collections');

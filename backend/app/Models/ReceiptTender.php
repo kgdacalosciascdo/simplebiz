@@ -19,7 +19,7 @@ class ReceiptTender extends Model
 
     protected function casts(): array
     {
-        return ['amount' => 'decimal:6', 'value_date' => 'date', 'version' => 'integer'];
+        return ['amount' => 'decimal:6', 'value_date' => 'date', 'failed_at' => 'datetime', 'version' => 'integer'];
     }
 
     public function receipt()
@@ -40,5 +40,10 @@ class ReceiptTender extends Model
     public function currency()
     {
         return $this->belongsTo(ReferenceCurrency::class);
+    }
+
+    public function replacement()
+    {
+        return $this->belongsTo(self::class, 'replaced_by_tender_id');
     }
 }

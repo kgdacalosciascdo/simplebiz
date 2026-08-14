@@ -36,4 +36,14 @@ class SaleLine extends Model
     {
         return $this->belongsTo(TaxCode::class);
     }
+
+    public function warehouse()
+    {
+        return $this->belongsTo(Warehouse::class);
+    }
+
+    public function stockLocation()
+    {
+        return $this->belongsTo(StockLocation::class);
+    }
 }

@@ -49,7 +49,7 @@ class SalesController extends Controller
 
     public function show(string $id)
     {
-        $sale = $this->sale($id, ['lines', 'customer', 'currency', 'paymentTerm', 'receivable', 'statusHistory']);
+        $sale = $this->sale($id, ['lines', 'customer', 'currency', 'paymentTerm', 'receivable', 'statusHistory', 'inventoryMovements']);
 
         return ApiResponse::success((new SaleResource($sale))->resolve());
     }

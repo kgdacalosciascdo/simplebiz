@@ -55,7 +55,7 @@ class ReferenceRegistryTest extends TestCase
         $child = $client->postJson('/api/v1/master-registries/stock-locations', ['code' => 'CHILD', 'name' => 'Child', 'warehouse_id' => $warehouse, 'parent_id' => $root])->json('data.id');
         $client->postJson("/api/v1/master-registries/stock-locations/{$root}/deactivate", ['reason' => 'Hierarchy test'])->assertStatus(409);
         $client->postJson('/api/v1/master-registries/stock-locations', ['code' => 'CROSS', 'name' => 'Cross', 'warehouse_id' => $warehouse, 'parent_id' => $child])->assertCreated();
-        $this->assertFalse(Schema::hasTable('inventory_balances'));
+        $this->assertTrue(Schema::hasTable('inventory_balances'));
     }
 
     public function test_reason_codes_are_domain_filtered_and_inactive_records_leave_lookup(): void

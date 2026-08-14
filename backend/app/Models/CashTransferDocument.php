@@ -66,4 +66,9 @@ class CashTransferDocument extends Model
     {
         return $this->belongsTo(self::class, 'reversal_document_id');
     }
+
+    public function remittance()
+    {
+        return $this->hasOne(CashRemittance::class, 'cash_transfer_document_id');
+    }
 }

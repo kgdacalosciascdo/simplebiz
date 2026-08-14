@@ -1,4 +1,5 @@
 import { useMemo, type ReactNode } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import {
   ArrowRight,
@@ -25,6 +26,30 @@ import {
 import { Bar, BarChart, Cell, LabelList, ResponsiveContainer, XAxis, YAxis } from 'recharts'
 import { Link } from 'react-router-dom'
 import { DataTable } from '../../components/DataTable'
+import { apiFetch } from '../../lib/api'
+
+type ApiEnvelope<T> = { data: T }
+
+type ApiActivity = {
+  occurred_at?: string
+  created_at?: string
+  activity_type: string
+  status: string
+  promise_amount?: string | number | null
+}
+
+type ApiRemittance = {
+  id: string
+  remittance_number: string
+  status: string
+  expected_amount: string | number
+  submitted_amount: string | number
+  difference_amount: string | number
+  source_cash_account?: { code?: string; name?: string } | null
+  destination_cash_account?: { code?: string; name?: string } | null
+  cash_transfer_document_id?: string | null
+  transfer?: { document_number?: string; status?: string; source_movement_id?: string; destination_movement_id?: string } | null
+}
 
 type Activity = {
   date: string
@@ -111,6 +136,27 @@ const centerActions = [
 ]
 
 export function CollectionsWorkspace() {
+  const companyId = window.localStorage.getItem('simplebiz_company_id')
+  const activityQuery = useQuery({
+    queryKey: ['simplebiz', 'collections-activities', companyId],
+    queryFn: () => apiFetch<ApiEnvelope<ApiActivity[]>>('/collections/activities?per_page=7'),
+    enabled: Boolean(companyId),
+  })
+  const remittanceQuery = useQuery({
+    queryKey: ['simplebiz', 'collections-remittances', companyId],
+    queryFn: () => apiFetch<ApiEnvelope<ApiRemittance[]>>('/collections/remittances?per_page=5'),
+    enabled: Boolean(companyId),
+  })
+  const liveActivities = activityQuery.data?.data?.map((activity) => ({
+    date: new Date(activity.occurred_at ?? activity.created_at ?? '2026-08-14').toLocaleDateString(),
+    activity: `${activity.activity_type.replaceAll('_', ' ')} · ${activity.status.replaceAll('_', ' ')}`,
+    amount: activity.promise_amount ? `₱${Number(activity.promise_amount).toLocaleString()}` : '—',
+    user: 'API',
+  }))
+  const displayActivities = liveActivities?.length ? liveActivities : activities
+  const liveRemittances = remittanceQuery.data?.data ?? []
+  const remittanceMeta = liveRemittances.length ? `${liveRemittances.length} tracked` : 'No remittances'
+
   const columns = useMemo<ColumnDef<Activity, unknown>[]>(() => [
     { accessorKey: 'date', header: 'Date' },
     { accessorKey: 'activity', header: 'Activity' },
@@ -164,18 +210,19 @@ export function CollectionsWorkspace() {
         </div>
       </CollectionsPanel>
 
-      <CollectionsPanel title="Records & Ledgers" icon={List}>
+      <CollectionsPanel title="Records & Ledgers" icon={List} meta={remittanceMeta}>
         <div className="sb-sales-record-grid">
           {records.map(({ label, icon: Icon }) => <button type="button" key={label} className="sb-sales-record-item">
             <Icon aria-hidden="true" /><span>{label}</span>
           </button>)}
         </div>
+        {liveRemittances.length > 0 && <div className="sb-collections-remittance-list" aria-label="Recent cash remittances">{liveRemittances.slice(0, 3).map((remittance) => <div className="sb-collections-remittance-row" key={remittance.id}><div><strong>{remittance.remittance_number}</strong><small>{remittance.source_cash_account?.name || 'Source account'} → {remittance.destination_cash_account?.name || 'Custody / external handoff'}</small></div><div><span>{remittance.status}</span><small>{remittance.transfer?.document_number || (remittance.cash_transfer_document_id ? 'Transfer linked' : 'No internal transfer')}</small></div></div>)}</div>}
       </CollectionsPanel>
     </section>
 
     <section className="sb-sales-dashboard-grid sb-sales-dashboard-grid-lower">
       <CollectionsPanel title="Recent Collection Activity" icon={List} className="sb-sales-span-two" footer={<PanelLink>View all</PanelLink>}>
-        <div className="sb-sales-activity-table"><DataTable data={activities} columns={columns} caption="Recent collection activity" /></div>
+        <div className="sb-sales-activity-table"><DataTable data={displayActivities} columns={columns} caption="Recent collection activity" /></div>
       </CollectionsPanel>
 
       <CollectionsPanel title="Reports" icon={List} className="sb-sales-span-two" footer={<PanelLink>View all</PanelLink>}>

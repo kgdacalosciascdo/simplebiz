@@ -34,8 +34,32 @@ export async function apiFetch<T>(path: string, options: ApiOptions = {}): Promi
   return body
 }
 
+export async function downloadApiFile(path: string): Promise<{ blob: Blob; filename: string }> {
+  const token = window.localStorage.getItem('simplebiz_token')
+  const companyId = window.localStorage.getItem('simplebiz_company_id')
+  const response = await fetch(`${API_URL}${path.startsWith('/') ? path : `/${path}`}`, {
+    headers: {
+      Accept: '*/*',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(companyId ? { 'X-Company-ID': companyId } : {}),
+    },
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as { message?: string }
+    throw new Error(body.message ?? 'The report file could not be downloaded.')
+  }
+  const disposition = response.headers.get('Content-Disposition') ?? ''
+  const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] ?? 'simplebiz-report'
+
+  return { blob: await response.blob(), filename }
+}
+
 export function saveToken(token: string) {
   window.localStorage.setItem('simplebiz_token', token)
+}
+
+export function newIdempotencyKey() {
+  return `${Date.now()}-${typeof window.crypto?.randomUUID === 'function' ? window.crypto.randomUUID() : Math.random().toString(36).slice(2)}`
 }
 
 export function clearToken() {

@@ -5,11 +5,20 @@ namespace App\Http\Controllers\Api;
 use App\Exceptions\RegistryConflictException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Collections\ApplyPaymentRequest;
+use App\Http\Requests\Collections\CollectionActivityRequest;
+use App\Http\Requests\Collections\FailedTenderRequest;
+use App\Http\Requests\Collections\OtherReceiptRequest;
 use App\Http\Requests\Collections\ReceiptActionRequest;
+use App\Http\Requests\Collections\RemittanceActionRequest;
+use App\Http\Requests\Collections\RemittanceRequest;
+use App\Http\Requests\Collections\ReprintReceiptRequest;
 use App\Http\Requests\Collections\StoreReceiptRequest;
+use App\Http\Resources\Collections\CashRemittanceResource;
 use App\Http\Resources\Collections\PaymentApplicationResource;
+use App\Http\Resources\Collections\ReceiptPrintableResource;
 use App\Http\Resources\Collections\ReceiptResource;
 use App\Http\Resources\Collections\UnappliedReceiptResource;
+use App\Models\CashRemittance;
 use App\Models\PaymentApplication;
 use App\Models\Receipt;
 use App\Services\CollectionsService;
@@ -64,9 +73,96 @@ class CollectionsController extends Controller
         }
     }
 
+    public function otherAction(ReceiptActionRequest $request, string $id)
+    {
+        if ($this->receipt($id)->receipt_type !== 'other_receipt') {
+            return ApiResponse::error('The selected record is not an Other Receipt.', 409);
+        }
+
+        return $this->action($request, $id);
+    }
+
     public function history(string $id)
     {
         return ApiResponse::success($this->receipt($id)->statusHistory()->get());
+    }
+
+    public function otherReceiptTypes()
+    {
+        return ApiResponse::success($this->service->otherReceiptTypes($this->context->get()));
+    }
+
+    public function storeOtherReceipt(OtherReceiptRequest $request)
+    {
+        return $this->idempotency->run($request, 'collections.other-receipt.create', $this->context->id(), fn () => ApiResponse::success((new ReceiptResource($this->service->createOtherDraft($request->validated(), $this->context->get(), $request)))->resolve(), 201));
+    }
+
+    public function otherReceipts(Request $request)
+    {
+        $request->merge(['receipt_type' => 'other_receipt']);
+
+        return $this->index($request);
+    }
+
+    public function reprint(ReprintReceiptRequest $request, string $id)
+    {
+        return $this->idempotency->run($request, 'collections.receipt.reprint', $this->context->id(), fn () => ApiResponse::success($this->service->reprint($this->receipt($id), $request->validated(), $this->context->get(), $request)));
+    }
+
+    public function printable(Request $request, string $id)
+    {
+        return ApiResponse::success((new ReceiptPrintableResource($this->service->printable($this->receipt($id), $this->context->get(), $request)))->resolve());
+    }
+
+    public function failTender(FailedTenderRequest $request, string $id)
+    {
+        return $this->idempotency->run($request, 'collections.tender.fail', $this->context->id(), fn () => ApiResponse::success($this->service->failTender($id, $request->validated(), $this->context->get(), $request)));
+    }
+
+    public function activities(Request $request)
+    {
+        [$items, $meta] = $this->service->listActivities($this->context->get(), $request);
+
+        return ApiResponse::success($items, 200, $meta);
+    }
+
+    public function storeActivity(CollectionActivityRequest $request)
+    {
+        return $this->idempotency->run($request, 'collections.activity.create', $this->context->id(), fn () => ApiResponse::success($this->service->createActivity($request->validated(), $this->context->get(), $request), 201));
+    }
+
+    public function remittances(Request $request)
+    {
+        [$items, $meta] = $this->service->remittances($this->context->get(), $request);
+
+        return ApiResponse::success(CashRemittanceResource::collection($items)->resolve(), 200, $meta);
+    }
+
+    public function showRemittance(string $id)
+    {
+        return ApiResponse::success((new CashRemittanceResource($this->service->showRemittance($id, $this->context->get())))->resolve());
+    }
+
+    public function report(Request $request, string $report)
+    {
+        return ApiResponse::success($this->service->report($report, $this->context->get(), $request));
+    }
+
+    public function storeRemittance(RemittanceRequest $request)
+    {
+        return $this->idempotency->run($request, 'collections.remittance.create', $this->context->id(), fn () => ApiResponse::success((new CashRemittanceResource($this->service->createRemittance($request->validated(), $this->context->get(), $request)))->resolve(), 201));
+    }
+
+    public function remittanceAction(RemittanceActionRequest $request, string $id)
+    {
+        $action = $request->route('action');
+
+        return $this->idempotency->run($request, 'collections.remittance.'.$action, $this->context->id(), fn () => ApiResponse::success((new CashRemittanceResource($this->service->transitionRemittance(CashRemittance::where('company_id', $this->context->id())->whereKey($id)->firstOrFail(), $action, $request->validated(), $this->context->get(), $request)))->resolve()));
+    }
+
+    public function resolveVariance(RemittanceActionRequest $request, string $id)
+    {
+        return $this->idempotency->run($request, 'collections.remittance.variance.resolve', $this->context->id(), fn () => ApiResponse::success($this->service->resolveVariance($id, $request->validated(), $this->context->get(), $request)));
     }
 
     public function unapplied(Request $request)

@@ -16,7 +16,7 @@ final class AttachmentService
 {
     public function __construct(private readonly AuditService $audit) {}
 
-    public function upload(UploadedFile $file, Model $record, Company $company, Request $request): Attachment
+    public function upload(UploadedFile $file, Model $record, Company $company, Request $request, ?string $ownerModule = null): Attachment
     {
         if ((int) $record->company_id !== (int) $company->id) {
             throw new RegistryConflictException('The requested record is outside the current company scope.');
@@ -29,11 +29,12 @@ final class AttachmentService
         }
         $id = (string) Str::uuid();
         $extension = strtolower($file->getClientOriginalExtension() ?: 'bin');
-        $path = "cash-accounts/{$company->id}/movement-evidence/{$id}.{$extension}";
+        $module = $ownerModule ?: 'cash-accounts';
+        $path = $module === 'cash-accounts' ? "cash-accounts/{$company->id}/movement-evidence/{$id}.{$extension}" : "{$module}/{$company->id}/evidence/{$id}.{$extension}";
         $disk = (string) config('filesystems.default', 'local');
         Storage::disk($disk)->putFileAs(dirname($path), $file, basename($path));
-        $attachment = Attachment::create(['id' => $id, 'company_id' => $company->id, 'owner_module' => 'cash-accounts', 'record_type' => $recordType, 'record_id' => $record->id, 'original_filename' => $file->getClientOriginalName(), 'stored_path' => $path, 'disk' => $disk, 'mime_type' => $file->getMimeType() ?: 'application/octet-stream', 'file_size' => $file->getSize(), 'file_hash' => $hash, 'sensitivity' => 'confidential', 'uploaded_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id')]);
-        $this->audit->record($request, 'cash-account.evidence.uploaded', $record, $company->id, [], ['attachment_id' => $attachment->id, 'filename' => $attachment->original_filename, 'file_hash' => $hash], null, 'Evidence uploaded', 'Evidence was uploaded to a governed Cash Account document.');
+        $attachment = Attachment::create(['id' => $id, 'company_id' => $company->id, 'owner_module' => $module, 'record_type' => $recordType, 'record_id' => $record->id, 'original_filename' => $file->getClientOriginalName(), 'stored_path' => $path, 'disk' => $disk, 'mime_type' => $file->getMimeType() ?: 'application/octet-stream', 'file_size' => $file->getSize(), 'file_hash' => $hash, 'sensitivity' => 'confidential', 'uploaded_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id')]);
+        $this->audit->record($request, $module === 'cash-accounts' ? 'cash-account.evidence.uploaded' : $module.'.evidence.uploaded', $record, $company->id, [], ['attachment_id' => $attachment->id, 'filename' => $attachment->original_filename, 'file_hash' => $hash], null, 'Evidence uploaded', 'Evidence was uploaded to a governed business document.');
 
         return $attachment;
     }
@@ -46,7 +47,7 @@ final class AttachmentService
         if (! Storage::disk($attachment->disk)->exists($attachment->stored_path)) {
             throw new RegistryConflictException('The requested evidence is no longer available.');
         }
-        $this->audit->record($request, 'cash-account.evidence.downloaded', null, $company->id, [], ['attachment_id' => $attachment->id, 'filename' => $attachment->original_filename], null, 'Evidence downloaded', 'Cash Account evidence was downloaded.');
+        $this->audit->record($request, $attachment->owner_module === 'cash-accounts' ? 'cash-account.evidence.downloaded' : $attachment->owner_module.'.evidence.downloaded', null, $company->id, [], ['attachment_id' => $attachment->id, 'filename' => $attachment->original_filename], null, 'Evidence downloaded', 'Governed business-document evidence was downloaded.');
 
         return Storage::disk($attachment->disk)->download($attachment->stored_path, $attachment->original_filename, ['Content-Type' => $attachment->mime_type]);
     }

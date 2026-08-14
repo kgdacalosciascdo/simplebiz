@@ -15,6 +15,7 @@ use App\Models\CashMovementDocument;
 use App\Models\CashMovementPurpose;
 use App\Models\CashMovementStatusHistory;
 use App\Models\Company;
+use App\Models\PaymentCorrection;
 use App\Models\PaymentMethod;
 use App\Models\ReasonCode;
 use App\Models\Receipt;
@@ -165,6 +166,83 @@ final class CashMovementService
         return $this->load($result);
     }
 
+    /**
+     * Create the authoritative MDS-700 outflow for a confirmed MDS-500 payment.
+     * MDS-500 supplies the payment source and payable Account Title; this method
+     * owns the Cash Movement and balanced cash-side accounting effect only.
+     */
+    public function createPaymentEffect(Company $company, CashAccount $cashAccount, string $amount, string $currencyCode, string $businessDate, string $sourceRecordType, string $sourceRecordId, string $sourceReference, string $offsetAccountId, string $eventType, string $clearingStatus, Request $request): array
+    {
+        if ($this->compare($amount, '0') <= 0 || $businessDate > now()->toDateString()) {
+            throw new RegistryConflictException('A confirmed payment requires a positive, non-future amount and date.');
+        }
+        if (in_array($clearingStatus, ['not_applicable', 'pending'], true) === false) {
+            throw new RegistryConflictException('The payment clearing state is invalid.');
+        }
+
+        return DB::transaction(function () use ($company, $cashAccount, $amount, $currencyCode, $businessDate, $sourceRecordType, $sourceRecordId, $sourceReference, $offsetAccountId, $eventType, $clearingStatus, $request) {
+            $account = CashAccount::where('company_id', $company->id)->whereKey($cashAccount->id)->lockForUpdate()->with('currency')->firstOrFail();
+            $this->validateAccount($account, 'MAKE_PAYMENTS', $company);
+            if (strtoupper((string) $account->currency?->code) !== strtoupper($currencyCode)) {
+                throw new RegistryConflictException('The payment currency must match the Cash Account currency.');
+            }
+            $lockDate = $company->cash_movement_lock_date ?? $company->opening_balance_lock_date;
+            if ($lockDate && $businessDate <= $lockDate->toDateString()) {
+                throw new RegistryConflictException('The payment date is within the locked date range.', ['dependency' => 'lock_date']);
+            }
+            $existing = CashMovement::where('company_id', $company->id)->where('source_record_type', $sourceRecordType)->where('source_record_id', $sourceRecordId)->where('movement_status', 'posted')->lockForUpdate()->first();
+            if ($existing) {
+                return ['movement' => $existing, 'accounting' => AccountingTransaction::findOrFail($existing->accounting_transaction_id)];
+            }
+            $offset = AccountTitle::where('company_id', $company->id)->whereKey($offsetAccountId)->where('status', 'active')->where('posting_eligible', true)->first();
+            if (! $offset) {
+                throw new RegistryConflictException('An active posting Accounts Payable Account Title is required for the payment effect.', ['dependency' => 'account_titles']);
+            }
+            $this->checkAvailableBalance($account, $amount, $company, $request);
+            $business = BusinessTransaction::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'transaction_type' => 'supplier_payment_outflow', 'status' => 'posted', 'actor_id' => $request->user()?->id, 'business_date' => $businessDate, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_key' => $request->header('Idempotency-Key')]);
+            $accounting = AccountingTransaction::create(['id' => (string) Str::uuid(), 'business_transaction_id' => $business->id, 'company_id' => $company->id, 'transaction_type' => 'supplier_payment_outflow', 'status' => 'posted', 'business_date' => $businessDate, 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id')]);
+            $this->lines($accounting->id, $account->account_title_id, $offset->id, $amount, 'decrease', $account->currency->code, 'MDS-500 Supplier Payment Cash Account effect');
+            $movement = CashMovement::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'cash_account_id' => $account->id, 'direction' => 'decrease', 'amount' => $amount, 'currency_code' => $account->currency->code, 'business_date' => $businessDate, 'posted_at' => now(), 'source_event_type' => $eventType, 'source_record_type' => $sourceRecordType, 'source_record_id' => $sourceRecordId, 'source_reference' => $sourceReference, 'movement_status' => 'posted', 'clearing_status' => $clearingStatus, 'reconciliation_status' => 'unreconciled', 'accounting_transaction_id' => $accounting->id, 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key')]);
+
+            return ['movement' => $movement, 'accounting' => $accounting];
+        });
+    }
+
+    /**
+     * Reverse the one authoritative Cash Movement created for a confirmed payment.
+     * MDS-700 clearing/reconciliation remains authoritative; Payments only creates
+     * the governed counter-movement after those dependencies allow correction.
+     */
+    public function reversePaymentEffect(Company $company, CashMovement $originalMovement, string $offsetAccountId, string $businessDate, PaymentCorrection $correction, Request $request): array
+    {
+        return DB::transaction(function () use ($company, $originalMovement, $offsetAccountId, $businessDate, $correction, $request) {
+            $original = CashMovement::where('company_id', $company->id)->whereKey($originalMovement->id)->lockForUpdate()->firstOrFail();
+            if ($original->movement_status !== 'posted' || $original->direction !== 'decrease') {
+                throw new RegistryConflictException('Only a posted supplier-payment outflow can be reversed.');
+            }
+            if ($original->reversal_movement_id) {
+                throw new RegistryConflictException('The payment Cash Movement has already been reversed.');
+            }
+            if (in_array($original->clearing_status, ['cleared', 'returned', 'reconciled'], true) || in_array($original->reconciliation_status, ['reconciled', 'cleared'], true)) {
+                throw new RegistryConflictException('The payment Cash Movement must be reopened by MDS-700 before it can be reversed.', ['dependency' => 'cash_reconciliation']);
+            }
+            $lockDate = $company->cash_movement_lock_date ?? $company->opening_balance_lock_date;
+            if ($lockDate && $businessDate <= $lockDate->toDateString()) {
+                throw new RegistryConflictException('The payment reversal date is within the locked date range.', ['dependency' => 'lock_date']);
+            }
+            $account = CashAccount::where('company_id', $company->id)->whereKey($original->cash_account_id)->lockForUpdate()->with('currency')->firstOrFail();
+            $this->validateAccount($account, 'MAKE_PAYMENTS', $company);
+            $offset = $this->offset($offsetAccountId, $company);
+            $business = BusinessTransaction::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'transaction_type' => 'supplier_payment_reversal', 'status' => 'posted', 'actor_id' => $request->user()?->id, 'business_date' => $businessDate, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_key' => $request->header('Idempotency-Key')]);
+            $accounting = AccountingTransaction::create(['id' => (string) Str::uuid(), 'business_transaction_id' => $business->id, 'company_id' => $company->id, 'transaction_type' => 'supplier_payment_reversal', 'status' => 'posted', 'business_date' => $businessDate, 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id')]);
+            $this->lines($accounting->id, $account->account_title_id, $offset->id, (string) $original->amount, 'increase', $account->currency->code, 'MDS-500 Supplier Payment Cash Movement reversal');
+            $counter = CashMovement::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'cash_account_id' => $account->id, 'direction' => 'increase', 'amount' => $original->amount, 'currency_code' => $account->currency->code, 'business_date' => $businessDate, 'posted_at' => now(), 'source_event_type' => 'EVT-PAY-020', 'source_record_type' => PaymentCorrection::class, 'source_record_id' => $correction->id, 'source_reference' => $correction->correction_number, 'movement_status' => 'posted', 'clearing_status' => $original->clearing_status, 'reconciliation_status' => 'unreconciled', 'original_movement_id' => $original->id, 'accounting_transaction_id' => $accounting->id, 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key')]);
+            $original->update(['reversal_movement_id' => $counter->id]);
+
+            return ['movement' => $counter, 'accounting' => $accounting];
+        });
+    }
+
     public function reverse(CashMovementDocument $document, string $reason, Company $company, Request $request): CashMovementDocument
     {
         $this->scope($document, $company);
@@ -240,14 +318,30 @@ final class CashMovementService
 
     public function createReceiptReversalEffect(CashAccount $account, Company $company, string $amount, string $currencyCode, string $businessDate, string $accountingId, string $offsetAccountTitleId, Receipt $receipt, PaymentMethod $paymentMethod, CashMovement $originalMovement, Request $request): CashMovement
     {
+        return $this->createReceiptReversalEffectWithOffsets($account, $company, $amount, $currencyCode, $businessDate, $accountingId, [['account_title_id' => $offsetAccountTitleId, 'amount' => $amount, 'description' => 'Receipt reversal customer credit effect']], $receipt, $paymentMethod, $originalMovement, $request);
+    }
+
+    public function createReceiptReversalEffectWithOffsets(CashAccount $account, Company $company, string $amount, string $currencyCode, string $businessDate, string $accountingId, array $offsets, Receipt $receipt, PaymentMethod $paymentMethod, CashMovement $originalMovement, Request $request): CashMovement
+    {
         $this->validateAccount($account, 'RECEIVE_FUNDS', $company);
-        $offset = AccountTitle::where('company_id', $company->id)->whereKey($offsetAccountTitleId)->where('status', 'active')->where('posting_eligible', true)->first();
-        if (! $offset || $this->compare($amount, '0') <= 0 || (string) $account->currency?->code !== strtoupper($currencyCode)) {
+        if ($this->compare($amount, '0') <= 0 || (string) $account->currency?->code !== strtoupper($currencyCode)) {
             throw new RegistryConflictException('The receipt reversal requires an active receiving Cash Account, matching currency, and posting offset.');
         }
-
+        $total = '0';
+        foreach ($offsets as $offset) {
+            $title = AccountTitle::where('company_id', $company->id)->whereKey($offset['account_title_id'] ?? null)->where('status', 'active')->where('posting_eligible', true)->first();
+            if (! $title || $this->compare((string) ($offset['amount'] ?? '0'), '0') <= 0) {
+                throw new RegistryConflictException('Each receipt reversal allocation must use an active posting Account Title.');
+            }
+            $total = bcadd($total, (string) $offset['amount'], 6);
+        }
+        if ($this->compare($total, $amount) !== 0) {
+            throw new RegistryConflictException('Receipt reversal allocations must equal the reversed tender amount.');
+        }
         AccountingTransactionLine::create(['id' => (string) Str::uuid(), 'accounting_transaction_id' => $accountingId, 'account_title_id' => $account->account_title_id, 'debit' => '0', 'credit' => $amount, 'currency_code' => strtoupper($currencyCode), 'description' => 'Receipt reversal '.$receipt->receipt_number.' Cash Account effect']);
-        AccountingTransactionLine::create(['id' => (string) Str::uuid(), 'accounting_transaction_id' => $accountingId, 'account_title_id' => $offset->id, 'debit' => $amount, 'credit' => '0', 'currency_code' => strtoupper($currencyCode), 'description' => 'Receipt reversal customer credit effect']);
+        foreach ($offsets as $offset) {
+            AccountingTransactionLine::create(['id' => (string) Str::uuid(), 'accounting_transaction_id' => $accountingId, 'account_title_id' => $offset['account_title_id'], 'debit' => $offset['amount'], 'credit' => '0', 'currency_code' => strtoupper($currencyCode), 'description' => $offset['description'] ?? 'Receipt reversal customer credit effect']);
+        }
 
         return CashMovement::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'cash_account_id' => $account->id, 'direction' => 'decrease', 'amount' => $amount, 'currency_code' => strtoupper($currencyCode), 'business_date' => $businessDate, 'posted_at' => now(), 'source_event_type' => 'EVT-COL-010', 'source_record_type' => Receipt::class, 'source_record_id' => $receipt->id, 'source_reference' => $receipt->receipt_number.'-REV', 'movement_status' => 'posted', 'clearing_status' => $paymentMethod->clearing_behavior === 'direct' ? 'not_applicable' : 'pending', 'reconciliation_status' => 'unreconciled', 'original_movement_id' => $originalMovement->id, 'accounting_transaction_id' => $accountingId, 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key')]);
     }

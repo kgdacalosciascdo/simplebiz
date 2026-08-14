@@ -25,7 +25,7 @@ use Illuminate\Support\Str;
 
 final class SalesService
 {
-    public function __construct(private readonly AuditService $audit, private readonly CashDocumentNumberService $numbers) {}
+    public function __construct(private readonly AuditService $audit, private readonly CashDocumentNumberService $numbers, private readonly InventoryService $inventory, private readonly InventoryCompletionService $inventoryCompletion) {}
 
     public function list(Company $company, Request $request)
     {
@@ -73,6 +73,7 @@ final class SalesService
             $sale->save();
             $this->writeLines($sale, $input['lines'], $company, $request);
             $this->recalculateStoredSale($sale, $input, $company, $request);
+            $this->inventoryCompletion->syncSaleReservations($sale, $company, $request);
             $this->audit($request, 'sales.draft.created', $sale, [], $sale->toArray(), 'A Sales draft was created.');
             SalesLifecycleEvent::dispatch('sales.draft.created', $company->id, 'sale', $sale->id);
 
@@ -98,6 +99,7 @@ final class SalesService
                 $this->writeLines($sale, $input['lines'], $company, $request);
             }
             $this->recalculateStoredSale($sale, $input + ['lines' => $sale->lines->toArray()], $company, $request);
+            $this->inventoryCompletion->syncSaleReservations($sale, $company, $request);
             $this->audit($request, 'sales.draft.updated', $sale, $before, $sale->toArray(), 'A Sales draft was updated.');
 
             return $sale->fresh(['lines', 'customer', 'currency', 'paymentTerm']);
@@ -124,6 +126,9 @@ final class SalesService
                     'cancel' => $this->cancel($sale, $actor, $reason),
                     default => throw new RegistryConflictException('Unsupported Sales action.'),
                 };
+                if ($action === 'cancel') {
+                    $this->inventoryCompletion->releaseSaleReservations($sale, $company, $request);
+                }
                 if ($to !== null && $to !== $from) {
                     SaleStatusHistory::create(['id' => (string) Str::uuid(), 'sale_id' => $sale->id, 'company_id' => $company->id, 'from_status' => $from, 'to_status' => $to, 'reason' => $reason, 'actor_id' => $actor, 'version' => $sale->version, 'correlation_id' => $request->attributes->get('correlation_id')]);
                 }
@@ -174,6 +179,142 @@ final class SalesService
         }
 
         return $buckets;
+    }
+
+    /**
+     * Read-only source contracts consumed by MDS-900.
+     *
+     * Sales & Receivables remains the owner of the status, amount, return,
+     * discount, and open-item meaning. Reports only shapes those governed
+     * records for a report definition.
+     */
+    public function report(string $report, Company $company, Request $request): array
+    {
+        $from = $request->input('from');
+        $to = $request->input('to');
+        $asOf = $request->input('as_of') ?: Carbon::today($company->timezone ?: config('app.timezone'))->toDateString();
+
+        return match ($report) {
+            'sales_register' => $this->salesRegister($company, $from, $to),
+            'sales_by_product' => $this->salesByProduct($company, $from, $to),
+            'receivables_aging' => $this->receivablesAgingReport($company, $asOf),
+            default => throw new RegistryConflictException('The requested Sales source report is not supported.'),
+        };
+    }
+
+    private function salesRegister(Company $company, ?string $from, ?string $to): array
+    {
+        $sales = Sale::where('company_id', $company->id)
+            ->whereIn('status', ['posted', 'reversed'])
+            ->when($from, fn ($query) => $query->whereDate('sale_date', '>=', $from))
+            ->when($to, fn ($query) => $query->whereDate('sale_date', '<=', $to))
+            ->with(['customer', 'currency'])
+            ->latest('sale_date')
+            ->get();
+
+        return [
+            'rows' => $sales->map(fn (Sale $sale) => [
+                'id' => $sale->id,
+                'sale_number' => $sale->sale_number,
+                'date' => $sale->sale_date?->toDateString(),
+                'customer' => $sale->customer?->display_name,
+                'status' => $sale->status,
+                'currency' => $sale->currency?->code,
+                'gross_sales' => (string) $sale->subtotal,
+                'discounts' => (string) bcadd((string) $sale->line_discount_total, (string) $sale->document_discount_total, 6),
+                'tax' => (string) $sale->tax_total,
+                'amount' => (string) $sale->total,
+                'receivable_amount' => (string) $sale->receivable_amount,
+                'return_status' => $sale->return_status,
+            ])->values()->all(),
+            'source_as_of_at' => now(),
+            'freshness_state' => 'current',
+            'currency_context' => 'Sales amounts remain separated by source currency.',
+        ];
+    }
+
+    private function salesByProduct(Company $company, ?string $from, ?string $to): array
+    {
+        $lines = SaleLine::where('company_id', $company->id)
+            ->whereHas('sale', function ($query) use ($company, $from, $to) {
+                $query->where('company_id', $company->id)
+                    ->whereIn('status', ['posted', 'reversed'])
+                    ->when($from, fn ($inner) => $inner->whereDate('sale_date', '>=', $from))
+                    ->when($to, fn ($inner) => $inner->whereDate('sale_date', '<=', $to));
+            })
+            ->with(['sale.currency', 'productService'])
+            ->get();
+
+        $rows = [];
+        foreach ($lines as $line) {
+            $key = $line->product_service_id.'|'.($line->sale?->currency?->code ?: 'UNKNOWN');
+            if (! isset($rows[$key])) {
+                $rows[$key] = [
+                    'id' => $line->product_service_id,
+                    'product' => $line->productService?->name ?: $line->description_snapshot,
+                    'product_code' => $line->productService?->code ?: $line->item_code_snapshot,
+                    'currency' => $line->sale?->currency?->code,
+                    'quantity' => '0',
+                    'gross_sales' => '0',
+                    'discounts' => '0',
+                    'net_sales' => '0',
+                    'returns' => '0',
+                    'margin' => null,
+                    'margin_state' => 'unavailable_without_governed_cost',
+                ];
+            }
+            $rows[$key]['quantity'] = bcadd($rows[$key]['quantity'], (string) $line->quantity, 6);
+            $rows[$key]['gross_sales'] = bcadd($rows[$key]['gross_sales'], (string) $line->gross_amount, 6);
+            $rows[$key]['discounts'] = bcadd($rows[$key]['discounts'], (string) $line->discount_amount, 6);
+            $rows[$key]['net_sales'] = bcadd($rows[$key]['net_sales'], (string) $line->net_amount, 6);
+        }
+
+        return [
+            'rows' => array_values($rows),
+            'source_as_of_at' => now(),
+            'freshness_state' => 'current',
+            'currency_context' => 'Sales amounts remain separated by source currency; margin is unavailable unless a governed cost source exists.',
+        ];
+    }
+
+    private function receivablesAgingReport(Company $company, string $asOf): array
+    {
+        $items = ReceivableOpenItem::where('company_id', $company->id)
+            ->where('remaining_amount', '>', 0)
+            ->with(['customer', 'currency', 'sourceSale'])
+            ->orderBy('due_date')
+            ->get();
+
+        $rows = $items->map(function (ReceivableOpenItem $item) use ($asOf) {
+            $bucket = 'current';
+            $daysPastDue = 0;
+            if ($item->due_date && $item->due_date->lt(Carbon::parse($asOf))) {
+                $daysPastDue = $item->due_date->diffInDays(Carbon::parse($asOf));
+                $bucket = $daysPastDue <= 30 ? '1_30' : ($daysPastDue <= 60 ? '31_60' : ($daysPastDue <= 90 ? '61_90' : 'over_90'));
+            }
+
+            return [
+                'id' => $item->id,
+                'source_document_number' => $item->source_document_number,
+                'customer' => $item->customer?->display_name,
+                'currency' => $item->currency?->code,
+                'due_date' => $item->due_date?->toDateString(),
+                'open_item' => (string) $item->remaining_amount,
+                'aging_bucket' => $bucket,
+                'days_past_due' => $daysPastDue,
+                'status' => $item->settlement_status,
+                'due_status' => $item->due_status,
+                'source_sale_id' => $item->source_sale_id,
+            ];
+        })->values()->all();
+
+        return [
+            'rows' => $rows,
+            'source_as_of_at' => now(),
+            'freshness_state' => 'current',
+            'currency_context' => 'Receivable balances remain separated by source currency.',
+            'as_of_basis' => 'Current governed open-item state evaluated against the requested as-of date.',
+        ];
     }
 
     public function billingStatements(Company $company, Request $request)
@@ -235,6 +376,7 @@ final class SalesService
             if (! $item) {
                 throw new RegistryConflictException('Every Sale line must reference an active same-company sellable Product or Service.', ['dependency' => 'product_service']);
             }
+            $this->inventory->validateSaleLineLocation($company, $item, $lineInput);
             $quantity = (string) $lineInput['quantity'];
             if (bccomp($quantity, '0', 6) <= 0) {
                 throw new RegistryConflictException('Sale quantities must be positive.');
@@ -268,7 +410,7 @@ final class SalesService
             $taxRate = $tax?->rate ?? '0';
             $taxAmount = $tax && $tax->basis === 'inclusive' ? bcsub($netBeforeTax, bcdiv($netBeforeTax, bcadd('1', bcdiv((string) $taxRate, '100', 6), 6), 6), 6) : ($tax ? bcdiv(bcmul($netBeforeTax, (string) $taxRate, 6), '100', 6) : '0');
             $net = $tax && $tax->basis === 'exclusive' ? bcadd($netBeforeTax, $taxAmount, 6) : $netBeforeTax;
-            SaleLine::create(['id' => (string) Str::uuid(), 'sale_id' => $sale->id, 'company_id' => $company->id, 'product_service_id' => $item->id, 'item_type' => $item->record_type, 'item_code_snapshot' => $item->code, 'description_snapshot' => $lineInput['description'] ?? $item->name, 'unit_code' => $item->baseUnit?->code, 'unit_name' => $item->baseUnit?->name, 'quantity' => $quantity, 'unit_price' => $unitPrice, 'gross_amount' => $gross, 'discount_type' => $discountType, 'discount_value' => $discountValue, 'discount_amount' => $discount, 'tax_code_id' => $tax?->id, 'tax_code_snapshot' => $tax?->code, 'tax_basis' => $tax?->basis, 'tax_rate' => $taxRate, 'taxable_amount' => $netBeforeTax, 'tax_amount' => $taxAmount, 'net_amount' => $net, 'stock_managed_snapshot' => (bool) $item->stock_managed, 'non_stock_snapshot' => (bool) $item->non_stock, 'service_snapshot' => $item->record_type === 'service', 'version' => 1]);
+            SaleLine::create(['id' => (string) Str::uuid(), 'sale_id' => $sale->id, 'company_id' => $company->id, 'product_service_id' => $item->id, 'warehouse_id' => $lineInput['warehouse_id'] ?? null, 'stock_location_id' => $lineInput['stock_location_id'] ?? null, 'item_type' => $item->record_type, 'item_code_snapshot' => $item->code, 'description_snapshot' => $lineInput['description'] ?? $item->name, 'unit_code' => $item->baseUnit?->code, 'unit_name' => $item->baseUnit?->name, 'quantity' => $quantity, 'unit_price' => $unitPrice, 'gross_amount' => $gross, 'discount_type' => $discountType, 'discount_value' => $discountValue, 'discount_amount' => $discount, 'tax_code_id' => $tax?->id, 'tax_code_snapshot' => $tax?->code, 'tax_basis' => $tax?->basis, 'tax_rate' => $taxRate, 'taxable_amount' => $netBeforeTax, 'tax_amount' => $taxAmount, 'net_amount' => $net, 'stock_managed_snapshot' => (bool) $item->stock_managed, 'non_stock_snapshot' => (bool) $item->non_stock, 'service_snapshot' => $item->record_type === 'service', 'version' => 1]);
         }
     }
 
@@ -326,7 +468,8 @@ final class SalesService
             $this->block($sale, 'collections', 'Cash Sales require Collections and a successful receipt before posting.');
         }
         if ($sale->lines->contains(fn ($line) => $line->stock_managed_snapshot)) {
-            $this->block($sale, 'inventory', 'Stock-managed Sale lines require the Inventory movement workflow before posting.');
+            $this->inventoryCompletion->consumeSaleReservations($sale, $company, $request);
+            $this->inventory->postSaleIssues($sale, $company, $request);
         }
         $accounts = $this->postingAccounts($company, (float) $sale->tax_total > 0);
         $business = BusinessTransaction::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'transaction_type' => 'credit_sale', 'status' => 'posted', 'actor_id' => $request->user()?->id, 'business_date' => $sale->sale_date, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_key' => 'sale:'.$sale->id]);

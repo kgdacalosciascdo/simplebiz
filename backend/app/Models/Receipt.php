@@ -56,4 +56,24 @@ class Receipt extends Model
     {
         return $this->hasMany(ReceiptStatusHistory::class)->latest();
     }
+
+    public function reprints()
+    {
+        return $this->hasMany(ReceiptReprint::class)->latest();
+    }
+
+    public function activities()
+    {
+        return $this->hasMany(CollectionActivity::class);
+    }
+
+    public function createdBy()
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function postedBy()
+    {
+        return $this->belongsTo(User::class, 'posted_by');
+    }
 }

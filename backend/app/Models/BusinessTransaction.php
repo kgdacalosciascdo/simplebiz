@@ -21,4 +21,9 @@ class BusinessTransaction extends Model
     {
         return ['business_date' => 'date'];
     }
+
+    public function accountingTransaction()
+    {
+        return $this->hasOne(AccountingTransaction::class);
+    }
 }

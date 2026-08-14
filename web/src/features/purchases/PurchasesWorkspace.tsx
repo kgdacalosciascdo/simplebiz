@@ -1,203 +1,117 @@
-import { useMemo, type ReactNode } from 'react'
+import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
-import {
-  ArrowRight,
-  BarChart3,
-  BookOpen,
-  ChevronUp,
-  CircleDollarSign,
-  ClipboardList,
-  FileText,
-  HandCoins,
-  List,
-  LockKeyhole,
-  ReceiptText,
-  RotateCcw,
-  ShoppingCart,
-  TriangleAlert,
-  Truck,
-  UserRound,
-  type LucideIcon,
-} from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { ArrowRight, BarChart3, BookOpen, ChevronUp, ClipboardList, FileText, HandCoins, List, LockKeyhole, ReceiptText, RotateCcw, ShoppingCart, TriangleAlert, Truck, UserRound, X, type LucideIcon } from 'lucide-react'
 import { Bar, BarChart, Cell, LabelList, ResponsiveContainer, XAxis, YAxis } from 'recharts'
 import { DataTable } from '../../components/DataTable'
+import { Badge, EmptyState, ErrorPanel, LoadingPanel, PageHeader } from '../../components/ui'
+import { apiFetch } from '../../lib/api'
 
+type Envelope<T> = { data: T }
+type Lookup = { id: string; code: string; name?: string; display_name?: string; symbol?: string; standard_purchase_price?: string }
+type Summary = { purchases_this_month: string; amount_to_pay: string; due_soon: string; overdue: string; open_payables: number; open_purchase_orders: number; invoices_pending_match: number; returns_pending: number; adjustments_pending: number; payables_on_hold: number; goods_receipts_pending_correction: number; recent_activity: Array<{ occurred_at?: string; title?: string; description?: string }> }
+type Order = { id: string; order_number: string; supplier?: { display_name?: string }; status: string; version: number; lines?: Array<{ id: string; product_name: string; stock_managed: boolean }> }
+type Receipt = { id: string; receipt_number: string; purchase_order_id: string; status: string; receipt_date: string; version: number }
+type InvoiceLine = { id: string; product_service_id: string; product_name?: string; description?: string; quantity: string; unit_amount?: string; unit_cost?: string }
+type Invoice = { id: string; invoice_number: string; external_invoice_number: string; supplier_id?: string; supplier?: { display_name?: string }; currency_id?: string; status: string; total: string; version: number; lines?: InvoiceLine[] }
+type ReturnLine = { id: string; goods_receipt_id: string; receipt_number?: string; purchase_order_number?: string; product_name?: string; original_received_quantity: string; previously_returned_quantity: string; remaining_returnable_quantity: string; warehouse_id?: string; stock_location_id?: string; stock_managed: boolean }
+type PurchaseReturn = { id: string; return_number: string; supplier?: { display_name?: string }; purchase_order?: { order_number?: string }; goods_receipt?: { receipt_number?: string }; status: string; version: number; lines?: Array<{ product_name?: string; quantity: string; original_received_quantity: string; previously_returned_quantity: string; remaining_returnable_quantity: string; inventory_movement_id?: string }> }
+type Adjustment = { id: string; adjustment_number: string; adjustment_type: 'debit' | 'credit'; supplier?: { display_name?: string }; status: string; total_amount: string; version: number }
+type InvoiceCorrection = { id: string; correction_number: string; original_invoice?: { invoice_number?: string }; status: string; total_amount: string; version: number }
+type Payable = { id: string; source_document_number: string; supplier?: { display_name?: string }; remaining_amount: string; due_date?: string; due_status: string; hold_status: string; currency?: { code?: string } }
+type AttentionItem = { key: string; count: number; title: string }
+type Lookups = { suppliers: Lookup[]; items: Lookup[]; currencies: Lookup[]; payment_terms: Lookup[]; warehouses: Lookup[]; stock_locations: Lookup[] }
 type Activity = { date: string; activity: string; amount: string; user: string }
-type ActionCard = { title: string; description: string; button: string; icon: LucideIcon; tone: string }
+type FormMode = 'order' | 'receipt' | 'invoice' | 'return' | 'adjustment' | 'correction' | null
 
-const actionCards: ActionCard[] = [
-  { title: 'Cash Purchase', description: 'Record purchase paid in cash.', button: 'New Cash Purchase', icon: ShoppingCart, tone: 'mint' },
-  { title: 'Credit Purchase', description: 'Record purchase bought in credit.', button: 'New Credit Purchase', icon: ShoppingCart, tone: 'peach' },
-  { title: 'Receive Items', description: 'Record goods received from suppliers.', button: 'Receive Items', icon: HandCoins, tone: 'blue' },
-  { title: 'Purchase Order', description: 'Create and track orders to suppliers.', button: 'New Purchase Order', icon: FileText, tone: 'lilac' },
-  { title: 'Pay Supplier', description: 'Pay outstanding supplier balances.', button: 'Pay Supplier', icon: CircleDollarSign, tone: 'yellow' },
-]
-
-const attentionItems = [
-  { count: 5, title: 'Payables Due today', detail: '₱5,750 requires follow-up', tone: 'red' },
-  { count: 1, title: 'Overdue supplier balances', detail: '₱18,750 requires follow-up', tone: 'red' },
-  { count: 1, title: 'Unapplied payments', detail: '₱1,000 payment is not applied to supplier payables', tone: 'amber' },
-  { count: 7, title: 'Voided or failed purchases', detail: '₱300 worth of purchase transaction is voided', tone: 'slate' },
-  { count: 3, title: 'Due in the next 7 days', detail: '₱50,580 due for payment in the next 7 days', tone: 'slate' },
-]
-
-const summaryData = [
-  { name: 'Purchases This Month', value: 493583, label: '₱493,583', color: '#2e86d7' },
-  { name: 'Supplier Payments This Month', value: 176200, label: '₱176,200', color: '#e64943' },
-  { name: 'Outstanding Payables', value: 84300, label: '₱84,300', color: '#f28a24' },
-  { name: 'Overdue Payables', value: 312900, label: '₱312,900', color: '#49ae68' },
-]
-
-const activities: Activity[] = [
-  { date: '29 July 2026', activity: 'Supplier payable paid', amount: '₱1,000', user: 'KVL' },
-  { date: '29 July 2026', activity: 'Receipt issued', amount: '₱300', user: 'KVL' },
-  { date: '29 July 2026', activity: 'Payment applied', amount: '₱5,000', user: 'CAL' },
-  { date: '29 July 2026', activity: 'Remittance recorded', amount: '₱10,000', user: 'CAL' },
-  { date: '29 July 2026', activity: 'Receipt voided', amount: '₱12,000', user: 'KVL' },
-  { date: '29 July 2026', activity: 'Unapplied payment recorded', amount: '₱25,000', user: 'KVL' },
-  { date: '29 July 2026', activity: 'Cash short/over recorded', amount: '₱3,000', user: 'CAL' },
-]
-
-const records = [
-  { label: 'Purchase History', icon: ShoppingCart },
-  { label: 'Supplier Payment History', icon: HandCoins },
-  { label: 'Goods Receipt History', icon: ClipboardList },
-  { label: 'Supplier Ledger', icon: BookOpen },
-  { label: 'Purchase Return History', icon: RotateCcw },
-  { label: 'Purchase Order History', icon: FileText },
-]
-
-const reportColumns = [
-  [
-    { label: 'Daily Purchases Report', icon: BarChart3 },
-    { label: 'Purchases Summary Report', icon: BarChart3 },
-    { label: 'Purchases by Supplier', icon: UserRound },
-    { label: 'Purchases by Product/Service', icon: ShoppingCart },
-    { label: 'Purchases Returns & Discounts', icon: ReceiptText },
-    { label: 'Purchases Trend', icon: ShoppingCart },
-  ],
-  [
-    { label: 'Payables Summary', icon: BarChart3 },
-    { label: 'Payables Aging', icon: ClipboardList },
-    { label: 'Supplier Balances', icon: ReceiptText },
-    { label: 'Unpaid & Partially Paid Purchases', icon: ShoppingCart },
-    { label: 'Overdue Payables', icon: ReceiptText },
-    { label: 'Payables Movement', icon: ReceiptText },
-  ],
-]
-
-const centerActions = [
-  { label: 'Request for Quotation', icon: FileText, tone: 'disabled' },
-  { label: 'Record Purchase Returns', icon: RotateCcw, tone: 'blue' },
-  { label: 'Create Credit Adjustment', icon: FileText, tone: 'peach' },
-  { label: 'Create Debit Adjustment', icon: FileText, tone: 'yellow' },
-]
+const money = (value: string | number, currency = 'PHP') => new Intl.NumberFormat('en-PH', { style: 'currency', currency, maximumFractionDigits: 2 }).format(Number(value || 0))
+const key = () => typeof window.crypto?.randomUUID === 'function' ? window.crypto.randomUUID() : `${Date.now()}-${Math.random()}`
 
 export function PurchasesWorkspace() {
-  const columns = useMemo<ColumnDef<Activity, unknown>[]>(() => [
-    { accessorKey: 'date', header: 'Date' },
-    { accessorKey: 'activity', header: 'Activity' },
-    { accessorKey: 'amount', header: 'Amount' },
-    { accessorKey: 'user', header: 'User' },
-  ], [])
+  const queryClient = useQueryClient()
+  const [formMode, setFormMode] = useState<FormMode>(null)
+  const summaryQuery = useQuery({ queryKey: ['purchases', 'summary'], queryFn: () => apiFetch<Envelope<Summary>>('/purchases/summary') })
+  const lookupsQuery = useQuery({ queryKey: ['purchases', 'lookups'], queryFn: () => apiFetch<Envelope<Lookups>>('/purchases/lookups') })
+  const ordersQuery = useQuery({ queryKey: ['purchases', 'orders'], queryFn: () => apiFetch<Envelope<Order[]>>('/purchases/orders?per_page=12') })
+  const receiptsQuery = useQuery({ queryKey: ['purchases', 'receipts'], queryFn: () => apiFetch<Envelope<Receipt[]>>('/purchases/receipts?per_page=12') })
+  const invoicesQuery = useQuery({ queryKey: ['purchases', 'invoices'], queryFn: () => apiFetch<Envelope<Invoice[]>>('/purchases/invoices?per_page=12') })
+  const returnsQuery = useQuery({ queryKey: ['purchases', 'returns'], queryFn: () => apiFetch<Envelope<PurchaseReturn[]>>('/purchases/returns?per_page=8') })
+  const adjustmentsQuery = useQuery({ queryKey: ['purchases', 'adjustments'], queryFn: () => apiFetch<Envelope<Adjustment[]>>('/purchases/adjustments?per_page=8') })
+  const correctionsQuery = useQuery({ queryKey: ['purchases', 'invoice-corrections'], queryFn: () => apiFetch<Envelope<InvoiceCorrection[]>>('/purchases/invoice-corrections?per_page=8') })
+  const payablesQuery = useQuery({ queryKey: ['purchases', 'payables'], queryFn: () => apiFetch<Envelope<Payable[]>>('/purchases/payables?per_page=6') })
+  const attentionQuery = useQuery({ queryKey: ['purchases', 'attention'], queryFn: () => apiFetch<Envelope<{ items: AttentionItem[] }>>('/purchases/attention') })
+  const summary = summaryQuery.data?.data
+  const lookups = lookupsQuery.data?.data
+  const loading = [summaryQuery, lookupsQuery, ordersQuery, receiptsQuery, invoicesQuery, returnsQuery, adjustmentsQuery, correctionsQuery, payablesQuery, attentionQuery].some((query) => query.isPending)
+  const error = [summaryQuery, lookupsQuery, ordersQuery, receiptsQuery, invoicesQuery, returnsQuery, adjustmentsQuery, correctionsQuery, payablesQuery, attentionQuery].find((query) => query.isError)
+  const refresh = () => void queryClient.invalidateQueries({ queryKey: ['purchases'] })
+  const activities = useMemo<Activity[]>(() => (summary?.recent_activity ?? []).map((item) => ({ date: item.occurred_at ? new Date(item.occurred_at).toLocaleDateString() : '—', activity: item.title ?? 'Purchase activity', amount: '—', user: '—' })), [summary])
+  const columns = useMemo<ColumnDef<Activity>[]>(() => [{ accessorKey: 'date', header: 'Date' }, { accessorKey: 'activity', header: 'Activity' }, { accessorKey: 'amount', header: 'Amount' }, { accessorKey: 'user', header: 'User' }], [])
+  const attention = attentionQuery.data?.data.items?.map((item, index) => ({ ...item, detail: index === 0 ? `${item.count} control item${item.count === 1 ? '' : 's'} require review.` : 'Review the governed Purchases control queue.', tone: ['red', 'amber', 'blue', 'slate', 'purple'][index % 5] })) ?? []
+  const chartData = summary ? [{ name: 'Purchases This Month', value: Number(summary.purchases_this_month), label: money(summary.purchases_this_month), color: '#2e86d7' }, { name: 'Amount to Pay', value: Number(summary.amount_to_pay), label: money(summary.amount_to_pay), color: '#e64943' }, { name: 'Due Soon', value: Number(summary.due_soon), label: money(summary.due_soon), color: '#f28a24' }, { name: 'Overdue', value: Number(summary.overdue), label: money(summary.overdue), color: '#49ae68' }] : []
 
   return <main className="sb-sales-reference sb-purchases-reference" aria-labelledby="purchases-management-title">
-    <header className="sb-sales-header">
-      <div className="sb-sales-title-icon" aria-hidden="true"><Truck /></div>
-      <div>
-        <h1 id="purchases-management-title">Purchases &amp; Payables Management</h1>
-        <p>Buy goods and services, receive items, track what you owe, and manage suppliers.</p>
-      </div>
-    </header>
-
-    <section className="sb-sales-action-grid" aria-label="Purchases shortcuts">
-      {actionCards.map((card) => <PurchaseActionCard key={card.title} {...card} />)}
-    </section>
-
-    <section className="sb-sales-dashboard-grid sb-sales-dashboard-grid-middle">
-      <PurchasePanel title="Needs Attention" icon={TriangleAlert} meta="17 items" className="sb-sales-span-two">
-        <div className="sb-sales-attention-list">
-          {attentionItems.map((item) => <button type="button" className="sb-sales-attention-row" key={item.title}>
-            <span className={`sb-sales-count sb-sales-count-${item.tone}`}>{item.count}</span>
-            <span><strong>{item.title}</strong><small>{item.detail}</small></span>
-            <ArrowRight aria-hidden="true" />
-          </button>)}
-        </div>
-        <PanelLink>View all</PanelLink>
-      </PurchasePanel>
-
-      <PurchasePanel title="Purchases & Payables Summary" icon={List} className="sb-sales-span-two">
-        <div className="sb-sales-chart" aria-label="Purchases and payables summary bar chart">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={summaryData} layout="vertical" margin={{ top: 5, right: 64, bottom: 5, left: 5 }}>
-              <XAxis type="number" domain={[0, 550000]} hide />
-              <YAxis type="category" dataKey="name" width={142} axisLine={false} tickLine={false} tick={{ fill: '#526678', fontSize: 11 }} />
-              <Bar dataKey="value" barSize={21} radius={[0, 2, 2, 0]}>
-                {summaryData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
-                <LabelList dataKey="label" position="right" fill="#526678" fontSize={10} />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-        <div className="sb-sales-total-row">
-          <BarChart3 aria-hidden="true" />
-          <span>Total Purchases This Month<strong>₱493,583</strong></span>
-          <small>12.6% increase vs last month</small>
-          <PanelLink>View report</PanelLink>
-        </div>
-      </PurchasePanel>
-
-      <PurchasePanel title="Records & Ledgers" icon={List}>
-        <div className="sb-sales-record-grid">
-          {records.map(({ label, icon: Icon }) => <button type="button" key={label} className="sb-sales-record-item">
-            <Icon aria-hidden="true" /><span>{label}</span>
-          </button>)}
-        </div>
-      </PurchasePanel>
-    </section>
-
-    <section className="sb-sales-dashboard-grid sb-sales-dashboard-grid-lower">
-      <PurchasePanel title="Recent Purchases Activity" icon={List} className="sb-sales-span-two" footer={<PanelLink>View all</PanelLink>}>
-        <div className="sb-sales-activity-table"><DataTable data={activities} columns={columns} caption="Recent purchase activity" /></div>
-      </PurchasePanel>
-
-      <PurchasePanel title="Reports" icon={List} className="sb-sales-span-two" footer={<PanelLink>View all</PanelLink>}>
-        <div className="sb-sales-report-grid">
-          {reportColumns.map((column, index) => <div key={index}>
-            {column.map(({ label, icon: Icon }) => <button type="button" key={label} className="sb-sales-report-link">
-              <Icon aria-hidden="true" /><span>{label}</span>
-            </button>)}
-          </div>)}
-        </div>
-      </PurchasePanel>
-
-      <PurchasePanel title="Action Center" icon={List} footer={<PanelLink>View all</PanelLink>}>
-        <div className="sb-sales-center-actions">
-          {centerActions.map(({ label, icon: Icon, tone }) => <button type="button" key={label} className={`sb-sales-center-button sb-sales-center-${tone}`} disabled={tone === 'disabled'}>
-            <Icon aria-hidden="true" /><span>{label}</span>{tone === 'disabled' && <LockKeyhole className="sb-purchase-lock" aria-label="Deferred" />}
-          </button>)}
-        </div>
-      </PurchasePanel>
-    </section>
+    <PageHeader icon={<Truck size={32} strokeWidth={1.7} />} title="Purchases & Payables Management" subtitle="Buy goods and services, receive items, track what you owe, and manage suppliers." context={summary ? `Live company purchasing position · ${summary.open_payables} open payables` : undefined} action={<Badge tone="info">MDS-400 core</Badge>} />
+    {error && <ErrorPanel message="The live Purchases data could not be loaded. No demo purchase data is being shown." onRetry={refresh} />}
+    {loading && !summary ? <LoadingPanel label="Loading Purchases & Payables…" /> : <>
+      <section className="sb-sales-action-grid" aria-label="Purchases shortcuts">
+        <PurchaseActionCard title="Purchase Order" description="Create and track orders to suppliers." button="New Purchase Order" icon={FileText} tone="lilac" onClick={() => setFormMode('order')} />
+        <PurchaseActionCard title="Receive Items" description="Record accepted and rejected supplier deliveries." button="Receive Items" icon={HandCoins} tone="blue" onClick={() => setFormMode('receipt')} />
+        <PurchaseActionCard title="Supplier Invoice" description="Match and post a supplier payable." button="Record Supplier Invoice" icon={ReceiptText} tone="mint" onClick={() => setFormMode('invoice')} />
+        <PurchaseActionCard title="Purchase Returns" description="Return received goods through a governed source document." button="Create Return" icon={RotateCcw} tone="peach" onClick={() => setFormMode('return')} />
+        <PurchaseActionCard title="Supplier Adjustments" description="Correct supplier obligations with source-linked debit or credit adjustments." button="Create Adjustment" icon={ShoppingCart} tone="yellow" onClick={() => setFormMode('adjustment')} />
+      </section>
+      <section className="sb-sales-dashboard-grid sb-sales-dashboard-grid-middle">
+        <PurchasePanel title="Needs Attention" icon={TriangleAlert} meta={`${attention.reduce((sum, item) => sum + item.count, 0)} items`} className="sb-sales-span-two"><div className="sb-sales-attention-list">{attention.length ? attention.map((item) => <button type="button" className="sb-sales-attention-row" key={item.key}><span className={`sb-sales-count sb-sales-count-${item.tone}`}>{item.count}</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><ArrowRight aria-hidden="true" /></button>) : <EmptyState title="Nothing needs attention" detail="Purchase Orders, receipts, returns, adjustments, and payables are within the current control queue." />}</div><PanelLink>View all</PanelLink></PurchasePanel>
+        <PurchasePanel title="Purchases & Payables Summary" icon={List} className="sb-sales-span-two"><div className="sb-sales-chart" aria-label="Purchases and payables summary bar chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={chartData} layout="vertical" margin={{ top: 5, right: 64, bottom: 5, left: 5 }}><XAxis type="number" hide /><YAxis type="category" dataKey="name" width={142} axisLine={false} tickLine={false} tick={{ fill: '#526678', fontSize: 11 }} /><Bar dataKey="value" barSize={21} radius={[0, 2, 2, 0]}>{chartData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}<LabelList dataKey="label" position="right" fill="#526678" fontSize={10} /></Bar></BarChart></ResponsiveContainer></div><div className="sb-sales-total-row"><BarChart3 aria-hidden="true" /><span>Amount to Pay<strong>{money(summary?.amount_to_pay ?? '0')}</strong></span><small>Supplier payments remain deferred to MDS-500.</small><PanelLink>View aging</PanelLink></div></PurchasePanel>
+        <PurchasePanel title="Records & Ledgers" icon={List}><div className="sb-sales-record-grid">{records.map(({ label, icon: Icon }) => <button type="button" key={label} className="sb-sales-record-item" onClick={() => label === 'Purchase Order History' ? document.getElementById('purchase-history')?.scrollIntoView({ behavior: 'smooth' }) : undefined}><Icon aria-hidden="true" /><span>{label}</span></button>)}</div><div className="mt-3 grid gap-2 border-t border-slate-200 pt-3 text-xs text-slate-600"><span>Returns pending: <strong>{summary?.returns_pending ?? 0}</strong></span><span>Adjustments pending: <strong>{summary?.adjustments_pending ?? 0}</strong></span><span>Payables on hold: <strong>{summary?.payables_on_hold ?? 0}</strong></span></div><div className="mt-3 grid gap-1 border-t border-slate-200 pt-3 text-xs text-slate-600">{(payablesQuery.data?.data ?? []).slice(0, 3).map((item) => <span key={item.id}>{item.source_document_number} · {money(item.remaining_amount, item.currency?.code ?? 'PHP')} · {item.hold_status}</span>)}</div></PurchasePanel>
+      </section>
+      <section id="purchase-history" className="sb-sales-dashboard-grid sb-sales-dashboard-grid-lower">
+        <PurchasePanel title="Recent Purchases Activity" icon={List} className="sb-sales-span-two" footer={<PanelLink>View all</PanelLink>}>{activities.length ? <div className="sb-sales-activity-table"><DataTable data={activities} columns={columns} caption="Recent purchase activity" /></div> : <EmptyState title="No purchase activity yet" detail="Posted Goods Receipts, Supplier Invoices, Returns, and Adjustments will appear here." />}</PurchasePanel>
+        <PurchasePanel title="Reports & Correction Queue" icon={List} className="sb-sales-span-two" footer={<PanelLink>View all</PanelLink>}><div className="sb-sales-report-grid">{reports.map(({ label, icon: Icon }) => <button type="button" key={label} className="sb-sales-report-link"><Icon aria-hidden="true" /><span>{label}</span></button>)}</div><ControlQueue returns={returnsQuery.data?.data ?? []} adjustments={adjustmentsQuery.data?.data ?? []} corrections={correctionsQuery.data?.data ?? []} onChanged={refresh} /></PurchasePanel>
+        <PurchasePanel title="Action Center" icon={List} footer={<PanelLink>View all</PanelLink>}><div className="sb-sales-center-actions">{actions.map(({ label, icon: Icon, tone, deferred, mode }) => <button type="button" key={label} className={`sb-sales-center-button sb-sales-center-${tone}`} disabled={deferred} onClick={() => mode && setFormMode(mode)} title={deferred ? 'Owned by MDS-500 and not available in Phase 7B' : undefined}><Icon aria-hidden="true" /><span>{label}</span>{deferred && <LockKeyhole className="sb-purchase-lock" aria-label="Deferred" />}</button>)}</div></PurchasePanel>
+      </section>
+    </>}
+    {formMode && lookups && <PurchaseForm mode={formMode} lookups={lookups} orders={ordersQuery.data?.data ?? []} invoices={invoicesQuery.data?.data ?? []} onClose={() => setFormMode(null)} onSaved={() => { setFormMode(null); refresh() }} />}
   </main>
 }
 
-function PurchaseActionCard({ title, description, button, icon: Icon, tone }: ActionCard) {
-  return <article className={`sb-sales-action-card sb-sales-action-${tone}`}>
-    <Icon className="sb-sales-action-icon" strokeWidth={1.65} aria-hidden="true" />
-    <h2>{title}</h2><p>{description}</p>
-    <button className="sb-sales-card-button" type="button">{button}</button>
-  </article>
+function PurchaseActionCard({ title, description, button, icon: Icon, tone, onClick, disabled = false }: { title: string; description: string; button: string; icon: LucideIcon; tone: string; onClick?: () => void; disabled?: boolean }) { return <article className={`sb-sales-action-card sb-sales-action-${tone} ${disabled ? 'sb-sales-action-disabled' : ''}`}><Icon className="sb-sales-action-icon" strokeWidth={1.65} aria-hidden="true" /><h2>{title}</h2><p>{description}</p><button className="sb-sales-card-button" type="button" onClick={onClick} disabled={disabled}>{button}</button></article> }
+function PurchasePanel({ title, icon: Icon, meta, className = '', footer, children }: { title: string; icon: LucideIcon; meta?: string; className?: string; footer?: ReactNode; children: ReactNode }) { return <article className={`sb-sales-panel ${className}`}><header className="sb-sales-panel-header"><span><Icon aria-hidden="true" />{title}</span><span className="sb-sales-panel-meta">{meta}<ChevronUp aria-hidden="true" /></span></header><div className="sb-sales-panel-body">{children}</div>{footer && <footer className="sb-sales-panel-footer">{footer}</footer>}</article> }
+function PanelLink({ children = 'View all' }: { children?: ReactNode }) { return <button type="button" className="sb-sales-panel-link">{children}<ArrowRight aria-hidden="true" /></button> }
+
+const records = [{ label: 'Purchase Order History', icon: FileText }, { label: 'Goods Receipt History', icon: ClipboardList }, { label: 'Purchase Return History', icon: RotateCcw }, { label: 'Supplier Invoice History', icon: ReceiptText }, { label: 'Supplier Adjustment History', icon: ReceiptText }, { label: 'Supplier Ledger', icon: BookOpen }, { label: 'Payment History · Deferred', icon: LockKeyhole }]
+const reports = [{ label: 'Daily Purchases Report', icon: BarChart3 }, { label: 'Purchases Summary Report', icon: BarChart3 }, { label: 'Purchase Returns', icon: RotateCcw }, { label: 'Supplier Adjustments', icon: ReceiptText }, { label: 'Purchases by Supplier', icon: UserRound }, { label: 'Payables Aging', icon: ClipboardList }, { label: 'Matching Exceptions', icon: TriangleAlert }, { label: 'Overdue Payables', icon: ReceiptText }]
+const actions: Array<{ label: string; icon: LucideIcon; tone: string; deferred?: boolean; mode?: Exclude<FormMode, null> }> = [{ label: 'Create Purchase Order', icon: FileText, tone: 'mint', mode: 'order' }, { label: 'Receive Items', icon: HandCoins, tone: 'blue', mode: 'receipt' }, { label: 'Record Supplier Invoice', icon: ReceiptText, tone: 'peach', mode: 'invoice' }, { label: 'Create Purchase Return', icon: RotateCcw, tone: 'yellow', mode: 'return' }, { label: 'Create Supplier Adjustment', icon: ReceiptText, tone: 'lilac', mode: 'adjustment' }, { label: 'Correct Supplier Invoice', icon: RotateCcw, tone: 'blue', mode: 'correction' }, { label: 'Pay Supplier · MDS-500', icon: LockKeyhole, tone: 'yellow', deferred: true }]
+
+function ControlQueue({ returns, adjustments, corrections, onChanged }: { returns: PurchaseReturn[]; adjustments: Adjustment[]; corrections: InvoiceCorrection[]; onChanged: () => void }) {
+  const [busy, setBusy] = useState('')
+  const act = async (path: string, version: number, label: string, confirm = false) => {
+    if (confirm && !window.confirm(`Confirm ${label.toLowerCase()}?`)) return
+    setBusy(path); try { await apiFetch(path, { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ version, reason: `${label} from Purchases workspace` }) }); onChanged() } finally { setBusy('') }
+  }
+  const rows = [
+    ...returns.slice(0, 3).map((item) => ({ id: item.id, title: item.return_number, detail: `Return · ${item.supplier?.display_name ?? 'Supplier'} · ${item.goods_receipt?.receipt_number ?? 'Goods Receipt'} · ${item.status}`, status: item.status, version: item.version, action: item.status === 'draft' ? `/purchases/returns/${item.id}/submit` : item.status === 'awaiting_approval' ? `/purchases/returns/${item.id}/approve` : item.status === 'approved' ? `/purchases/returns/${item.id}/post` : item.status === 'posted' ? `/purchases/returns/${item.id}/reverse` : '', label: item.status === 'draft' ? 'Submit' : item.status === 'awaiting_approval' ? 'Approve' : item.status === 'approved' ? 'Post' : item.status === 'posted' ? 'Reverse' : '' })),
+    ...adjustments.slice(0, 3).map((item) => ({ id: item.id, title: item.adjustment_number, detail: `${item.adjustment_type === 'debit' ? 'Debit' : 'Credit'} adjustment · ${item.supplier?.display_name ?? 'Supplier'} · ${item.status}`, status: item.status, version: item.version, action: item.status === 'draft' ? `/purchases/adjustments/${item.id}/submit` : item.status === 'awaiting_approval' ? `/purchases/adjustments/${item.id}/approve` : item.status === 'posted' ? `/purchases/adjustments/${item.id}/reverse` : '', label: item.status === 'draft' ? 'Submit' : item.status === 'awaiting_approval' ? 'Approve' : item.status === 'posted' ? 'Reverse' : '' })),
+    ...corrections.slice(0, 3).map((item) => ({ id: item.id, title: item.correction_number, detail: `Invoice correction · ${item.original_invoice?.invoice_number ?? 'Supplier Invoice'} · ${item.status}`, status: item.status, version: item.version, action: item.status === 'draft' ? `/purchases/invoice-corrections/${item.id}/submit` : item.status === 'awaiting_approval' ? `/purchases/invoice-corrections/${item.id}/approve` : item.status === 'posted' ? `/purchases/invoice-corrections/${item.id}/reverse` : '', label: item.status === 'draft' ? 'Submit' : item.status === 'awaiting_approval' ? 'Approve' : item.status === 'posted' ? 'Reverse' : '' })),
+  ]
+  return <div className="mt-4 grid gap-2 border-t border-slate-200 pt-3 text-xs text-slate-600"><strong className="text-slate-800">MDS-400 source-document queue</strong>{rows.length ? rows.map((row) => <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-slate-50 px-2 py-1.5" key={`${row.title}-${row.id}`}><span><strong className="text-slate-800">{row.title}</strong><small className="ml-2">{row.detail}</small></span>{row.action && <button type="button" className="rounded border border-[#168fc6] px-2 py-1 font-semibold text-[#086998] hover:bg-[#e7f6fc] disabled:opacity-50" disabled={busy === row.action} onClick={() => void act(row.action, row.version, row.label, row.label === 'Reverse')}>{busy === row.action ? 'Saving…' : row.label}</button>}</div>) : <span>No returns, adjustments, or invoice corrections recorded yet.</span>}</div>
 }
 
-function PurchasePanel({ title, icon: Icon, meta, className = '', footer, children }: { title: string; icon: LucideIcon; meta?: string; className?: string; footer?: ReactNode; children: ReactNode }) {
-  return <article className={`sb-sales-panel ${className}`}>
-    <header className="sb-sales-panel-header"><span><Icon aria-hidden="true" />{title}</span><span className="sb-sales-panel-meta">{meta}<ChevronUp aria-hidden="true" /></span></header>
-    <div className="sb-sales-panel-body">{children}</div>
-    {footer && <footer className="sb-sales-panel-footer">{footer}</footer>}
-  </article>
-}
-
-function PanelLink({ children }: { children: ReactNode }) {
-  return <button type="button" className="sb-sales-panel-link">{children}<ArrowRight aria-hidden="true" /></button>
+function PurchaseForm({ mode, lookups, orders, invoices, onClose, onSaved }: { mode: Exclude<FormMode, null>; lookups: Lookups; orders: Order[]; invoices: Invoice[]; onClose: () => void; onSaved: () => void }) {
+  const [saving, setSaving] = useState(false); const [error, setError] = useState('')
+  const [supplierId, setSupplierId] = useState(lookups.suppliers[0]?.id ?? ''); const [currencyId, setCurrencyId] = useState(lookups.currencies[0]?.id ?? ''); const [itemId, setItemId] = useState(lookups.items[0]?.id ?? ''); const [orderId, setOrderId] = useState(orders.find((order) => ['approved', 'partially_received'].includes(order.status))?.id ?? ''); const [quantity, setQuantity] = useState('1'); const [unitCost, setUnitCost] = useState(lookups.items[0]?.standard_purchase_price ?? '0'); const [date, setDate] = useState(new Date().toISOString().slice(0, 10)); const [returnLineId, setReturnLineId] = useState(''); const [adjustmentInvoiceId, setAdjustmentInvoiceId] = useState(invoices.find((invoice) => invoice.status === 'posted')?.id ?? ''); const [adjustmentType, setAdjustmentType] = useState<'debit' | 'credit'>('debit'); const [explanation, setExplanation] = useState(''); const [evidenceReference, setEvidenceReference] = useState('')
+  void setEvidenceReference
+  const selectedOrder = orders.find((order) => order.id === orderId); const selectedLine = selectedOrder?.lines?.[0]; const selectedInvoice = invoices.find((invoice) => invoice.id === adjustmentInvoiceId); const item = lookups.items.find((entry) => entry.id === itemId); const invoiceDetailQuery = useQuery({ queryKey: ['purchases', 'invoice', adjustmentInvoiceId], queryFn: () => apiFetch<Envelope<Invoice>>(`/purchases/invoices/${adjustmentInvoiceId}`), enabled: mode === 'adjustment' && Boolean(adjustmentInvoiceId) }); const invoiceDetail = invoiceDetailQuery.data?.data ?? selectedInvoice; const eligibleQuery = useQuery({ queryKey: ['purchases', 'eligible-return-lines'], queryFn: () => apiFetch<Envelope<{ items: ReturnLine[] }>>('/purchases/returns/eligible-lines'), enabled: mode === 'return' }); const eligibleLines = eligibleQuery.data?.data.items ?? []; const selectedReturnLine = eligibleLines.find((line) => line.id === returnLineId); const updateItem = (value: string) => { setItemId(value); setUnitCost(lookups.items.find((entry) => entry.id === value)?.standard_purchase_price ?? '0') }
+  async function submit(event: FormEvent) { event.preventDefault(); setSaving(true); setError(''); try {
+    if (mode === 'order') await apiFetch('/purchases/orders', { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ supplier_id: supplierId, currency_id: currencyId, purchase_date: date, lines: [{ product_service_id: itemId, quantity, unit_cost: unitCost }] }) })
+    if (mode === 'receipt') { if (!selectedOrder || !selectedLine) throw new Error('Select an approved Purchase Order first.'); const created = await apiFetch<Envelope<Receipt>>('/purchases/receipts', { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ purchase_order_id: selectedOrder.id, receipt_date: date, lines: [{ purchase_order_line_id: selectedLine.id, quantity }] }) }); const submitted = await apiFetch<Envelope<Receipt>>(`/purchases/receipts/${created.data.id}/submit`, { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ version: created.data.version }) }); await apiFetch(`/purchases/receipts/${created.data.id}/post`, { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ version: submitted.data.version }) }) }
+    if (mode === 'invoice') { const created = await apiFetch<Envelope<Invoice>>('/purchases/invoices', { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ supplier_id: supplierId, currency_id: currencyId, invoice_date: date, external_invoice_number: `LOCAL-${Date.now()}`, lines: [{ product_service_id: itemId, quantity, unit_cost: unitCost }] }) }); const submitted = await apiFetch<Envelope<Invoice>>(`/purchases/invoices/${created.data.id}/submit`, { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ version: created.data.version }) }); const approved = await apiFetch<Envelope<Invoice>>(`/purchases/invoices/${created.data.id}/approve`, { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ version: submitted.data.version }) }); await apiFetch(`/purchases/invoices/${created.data.id}/post`, { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ version: approved.data.version }) }) }
+    if (mode === 'return') { if (!selectedReturnLine) throw new Error('Select an eligible received line.'); const created = await apiFetch<Envelope<PurchaseReturn>>('/purchases/returns', { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ goods_receipt_id: selectedReturnLine.goods_receipt_id, return_date: date, evidence_reference: evidenceReference || undefined, explanation: explanation || 'Purchase Return prepared from the Purchases workspace.', lines: [{ goods_receipt_line_id: selectedReturnLine.id, quantity }] }) }); await apiFetch(`/purchases/returns/${created.data.id}/submit`, { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ version: created.data.version }) }) }
+    if (mode === 'adjustment') { if (!invoiceDetail?.lines?.[0]) throw new Error('The selected invoice has no line detail available for an adjustment.'); const created = await apiFetch<Envelope<Adjustment>>('/purchases/adjustments', { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ adjustment_type: adjustmentType, supplier_invoice_id: invoiceDetail.id, currency_id: invoiceDetail.currency_id ?? currencyId, adjustment_date: date, evidence_reference: evidenceReference || undefined, explanation: explanation || 'Supplier payable correction prepared from the Purchases workspace.', lines: [{ supplier_invoice_line_id: invoiceDetail.lines[0].id, description: explanation || 'Supplier payable correction', unit_amount: unitCost }] }) }); await apiFetch(`/purchases/adjustments/${created.data.id}/submit`, { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ version: created.data.version }) }) }
+    if (mode === 'correction') { if (!invoiceDetail) throw new Error('Select a posted Supplier Invoice first.'); const created = await apiFetch<Envelope<{ id: string; version: number }>>(`/purchases/invoices/${invoiceDetail.id}/correction`, { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ correction_date: date, evidence_reference: evidenceReference || undefined, reason: explanation || 'Supplier Invoice correction prepared from the Purchases workspace.' }) }); await apiFetch(`/purchases/invoice-corrections/${created.data.id}/submit`, { method: 'POST', headers: { 'Idempotency-Key': key() }, body: JSON.stringify({ version: created.data.version }) }) }
+    onSaved()
+  } catch (caught) { setError(caught instanceof Error ? caught.message : 'The purchase action could not be completed.') } finally { setSaving(false) } }
+  const title = mode === 'order' ? 'New Purchase Order' : mode === 'receipt' ? 'Receive Items' : mode === 'invoice' ? 'Record Supplier Invoice' : mode === 'return' ? 'Create Purchase Return' : mode === 'correction' ? 'Correct Supplier Invoice' : 'Create Supplier Adjustment'
+  return <div className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/45 p-4" role="dialog" aria-modal="true" aria-labelledby="purchase-form-title"><form onSubmit={submit} className="w-full max-w-xl rounded-xl border-2 border-[#138fc6] bg-white p-5 shadow-2xl"><div className="mb-5 flex items-start justify-between gap-3"><div><h2 id="purchase-form-title" className="text-xl font-bold text-slate-950">{title}</h2><p className="mt-1 text-sm text-slate-600">This creates governed MDS-400 evidence. Payments remain in MDS-500.</p></div><button type="button" onClick={onClose} className="rounded-full p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900" aria-label="Close"><X size={18} /></button></div><div className="grid gap-4 sm:grid-cols-2">{(mode === 'order' || mode === 'invoice') && <label className="text-sm font-semibold text-slate-700">Supplier<select required value={supplierId} onChange={(event) => setSupplierId(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5">{lookups.suppliers.map((entry) => <option key={entry.id} value={entry.id}>{entry.display_name ?? entry.name ?? entry.code}</option>)}</select></label>}{mode === 'receipt' && <label className="text-sm font-semibold text-slate-700 sm:col-span-2">Approved Purchase Order<select required value={orderId} onChange={(event) => setOrderId(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5"><option value="">Select order</option>{orders.filter((order) => ['approved', 'partially_received'].includes(order.status)).map((entry) => <option key={entry.id} value={entry.id}>{entry.order_number} · {entry.supplier?.display_name ?? 'Supplier'}</option>)}</select></label>}{mode === 'return' && <label className="text-sm font-semibold text-slate-700 sm:col-span-2">Eligible received line<select required value={returnLineId} onChange={(event) => setReturnLineId(event.target.value)} disabled={eligibleQuery.isPending} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5"><option value="">{eligibleQuery.isPending ? 'Loading eligible lines…' : 'Select received line'}</option>{eligibleLines.map((line) => <option key={line.id} value={line.id}>{line.receipt_number ?? 'Goods Receipt'} · {line.product_name ?? 'Product'} · returnable {line.remaining_returnable_quantity}</option>)}</select></label>}{(mode === 'adjustment' || mode === 'correction') && <label className="text-sm font-semibold text-slate-700 sm:col-span-2">Posted Supplier Invoice<select required value={adjustmentInvoiceId} onChange={(event) => setAdjustmentInvoiceId(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5"><option value="">Select posted invoice</option>{invoices.filter((invoice) => invoice.status === 'posted').map((entry) => <option key={entry.id} value={entry.id}>{entry.invoice_number} · {entry.supplier?.display_name ?? 'Supplier'}</option>)}</select></label>}{(mode === 'order' || mode === 'invoice') && <label className="text-sm font-semibold text-slate-700">Currency<select required value={currencyId} onChange={(event) => setCurrencyId(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5">{lookups.currencies.map((entry) => <option key={entry.id} value={entry.id}>{entry.code} — {entry.name}</option>)}</select></label>}<label className="text-sm font-semibold text-slate-700">Date<input required type="date" value={date} onChange={(event) => setDate(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5" /></label>{mode === 'adjustment' && <label className="text-sm font-semibold text-slate-700">Adjustment type<select value={adjustmentType} onChange={(event) => setAdjustmentType(event.target.value as 'debit' | 'credit')} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5"><option value="debit">Debit · decreases payable</option><option value="credit">Credit · increases payable</option></select></label>}{(mode === 'order' || mode === 'invoice') && <label className="text-sm font-semibold text-slate-700 sm:col-span-2">Product or Service<select required value={itemId} onChange={(event) => updateItem(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5">{lookups.items.map((entry) => <option key={entry.id} value={entry.id}>{entry.code} · {entry.name}</option>)}</select></label>}{mode !== 'adjustment' && mode !== 'correction' && <label className="text-sm font-semibold text-slate-700">Quantity<input required min="0.000001" step="0.000001" type="number" value={quantity} onChange={(event) => setQuantity(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5" /></label>}{(mode === 'order' || mode === 'invoice' || mode === 'adjustment') && <label className="text-sm font-semibold text-slate-700">{mode === 'adjustment' ? 'Adjustment amount' : 'Unit cost'}<input required min="0" step="0.000001" type="number" value={unitCost} onChange={(event) => setUnitCost(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5" /></label>}{mode === 'return' && <p className="self-end text-xs text-slate-500">{selectedReturnLine ? `${selectedReturnLine.product_name ?? 'Received item'} · ${selectedReturnLine.stock_managed ? 'MDS-600 stock out on post' : 'service/non-stock, no stock movement'}` : 'Select an eligible received line.'}</p>}{mode === 'receipt' && <p className="self-end text-xs text-slate-500">Receiving: {selectedLine?.product_name ?? 'Select an order'}{selectedLine?.stock_managed ? ' · stock-managed' : ' · service/non-stock'}</p>}{(mode === 'return' || mode === 'adjustment' || mode === 'correction') && <label className="text-sm font-semibold text-slate-700 sm:col-span-2">Reason / explanation<textarea required value={explanation} onChange={(event) => setExplanation(event.target.value)} rows={3} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5" /></label>}</div>{(eligibleQuery.isError || invoiceDetailQuery.isError || error) && <div className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error || 'Source detail could not be loaded.'}</div>}<div className="mt-6 flex justify-end gap-3"><button type="button" onClick={onClose} className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Cancel</button><button disabled={saving || (mode === 'receipt' && !selectedLine) || (mode === 'return' && !selectedReturnLine) || ((mode === 'adjustment' || mode === 'correction') && !invoiceDetail) || ((mode === 'adjustment' && !invoiceDetail?.lines?.[0])) || ((mode === 'order' || mode === 'invoice') && !item)} className="rounded-lg bg-[#168fc6] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#087caf] disabled:cursor-not-allowed disabled:opacity-50">{saving ? 'Saving…' : 'Complete action'}</button></div></form></div>
 }

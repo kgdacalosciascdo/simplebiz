@@ -66,4 +66,9 @@ class Sale extends Model
     {
         return $this->hasMany(SaleStatusHistory::class)->latest();
     }
+
+    public function inventoryMovements()
+    {
+        return $this->hasMany(StockMovement::class, 'source_id')->where('source_type', self::class);
+    }
 }
