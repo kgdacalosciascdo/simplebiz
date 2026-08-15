@@ -68,6 +68,17 @@ class ReferenceRegistryTest extends TestCase
         $client->getJson('/api/v1/master-registries/reference-lookups?domain=INVENTORY_ADJUSTMENT')->assertOk()->assertJsonCount(0, 'data.reason_codes');
     }
 
+    public function test_reference_lookups_are_searchable_and_bounded(): void
+    {
+        [$user, $company] = $this->ownerContext();
+        $client = $this->actingAs($user, 'sanctum')->withHeader('X-Company-ID', $company->id);
+        $client->postJson('/api/v1/master-registries/payment-methods', ['code' => 'BANK', 'name' => 'Bank Transfer', 'method_class' => 'BANK_TRANSFER', 'supports_incoming' => true])->assertCreated();
+        $client->postJson('/api/v1/master-registries/payment-methods', ['code' => 'CASH', 'name' => 'Cash', 'method_class' => 'CASH', 'supports_incoming' => true])->assertCreated();
+
+        $client->getJson('/api/v1/master-registries/reference-lookups?q=bank&limit=1')->assertOk()->assertJsonCount(1, 'data.payment_methods')->assertJsonPath('data.payment_methods.0.code', 'BANK');
+        $client->getJson('/api/v1/master-registries/lookups?q=bank&limit=1')->assertOk()->assertJsonCount(0, 'data.business_partners');
+    }
+
     private function ownerContext(): array
     {
         $setup = $this->postJson('/api/v1/setup/bootstrap', ['name' => 'Owner', 'email' => 'owner@example.test', 'password' => 'password-123', 'password_confirmation' => 'password-123', 'company_name' => 'Acme Demo', 'currency' => 'PHP', 'timezone' => 'Asia/Manila', 'locale' => 'en']);

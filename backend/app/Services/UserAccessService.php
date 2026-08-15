@@ -132,7 +132,7 @@ class UserAccessService
         });
     }
 
-    public function changeStatus(Request $request, Company $company, User $user, string $status)
+    public function changeStatus(Request $request, Company $company, User $user, string $status, ?string $reason = null)
     {
         if (! in_array($status, ['active', 'suspended', 'deactivated'], true)) {
             return ApiResponse::error('The membership status is invalid.', 422);
@@ -148,15 +148,15 @@ class UserAccessService
             }
             $before = ['status' => $membership->pivot->status];
             $user->companies()->updateExistingPivot($company->id, ['status' => $status]);
-            $this->history($request, $company, $user, 'membership.'.$status, $before, ['status' => $status], 'Membership status changed');
+            $this->history($request, $company, $user, 'membership.'.$status, $before, ['status' => $status], 'Membership status changed', $reason);
 
             return ApiResponse::success(['user_id' => $user->id, 'status' => $status]);
         });
     }
 
-    private function history(Request $request, Company $company, User $user, string $action, array $before, array $after, string $title): void
+    private function history(Request $request, Company $company, User $user, string $action, array $before, array $after, string $title, ?string $reason = null): void
     {
-        MembershipAccessHistory::create(['company_id' => $company->id, 'user_id' => $user->id, 'actor_id' => $request->user()?->id, 'action' => $action, 'previous_state' => $before, 'new_state' => $after, 'source_channel' => 'api', 'correlation_id' => $request->attributes->get('correlation_id'), 'created_at' => now()]);
-        $this->audit->record($request, 'user.access.'.$action, $user, $company->id, $before, $after, null, $title, "Access for {$user->email} changed.");
+        MembershipAccessHistory::create(['company_id' => $company->id, 'user_id' => $user->id, 'actor_id' => $request->user()?->id, 'action' => $action, 'previous_state' => $before, 'new_state' => $after, 'reason' => $reason, 'source_channel' => 'api', 'correlation_id' => $request->attributes->get('correlation_id'), 'created_at' => now()]);
+        $this->audit->record($request, 'user.access.'.$action, $user, $company->id, $before, $after, $reason, $title, "Access for {$user->email} changed.");
     }
 }

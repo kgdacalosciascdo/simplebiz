@@ -2,13 +2,18 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Exceptions\RegistryConflictException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\CashAccounts\CapabilityRequest;
+use App\Http\Requests\CashAccounts\CashAccountClosureActionRequest;
+use App\Http\Requests\CashAccounts\CashAccountClosureRequest;
 use App\Http\Requests\CashAccounts\CustodianRequest;
 use App\Http\Requests\CashAccounts\EndCustodianRequest;
+use App\Http\Requests\CashAccounts\EvidenceRequest;
 use App\Http\Requests\CashAccounts\StoreCashAccountRequest;
 use App\Http\Requests\CashAccounts\TransitionCashAccountRequest;
 use App\Http\Requests\CashAccounts\UpdateCashAccountRequest;
+use App\Http\Resources\CashAccounts\AttachmentResource;
 use App\Http\Resources\CashAccounts\CashAccountResource;
 use App\Http\Resources\CashAccounts\CashAccountTypeResource;
 use App\Http\Resources\CashAccounts\CashMovementResource;
@@ -21,6 +26,7 @@ use App\Models\CashAccountType;
 use App\Models\OpeningBalance;
 use App\Models\ReasonCode;
 use App\Models\ReferenceCurrency;
+use App\Services\AttachmentService;
 use App\Services\CashAccountService;
 use App\Services\CashPositionService;
 use App\Support\ApiResponse;
@@ -30,7 +36,7 @@ use Illuminate\Http\Request;
 
 class CashAccountController extends Controller
 {
-    public function __construct(private readonly CompanyContext $context, private readonly CashAccountService $service, private readonly CashPositionService $positions, private readonly IdempotencyService $idempotency) {}
+    public function __construct(private readonly CompanyContext $context, private readonly CashAccountService $service, private readonly CashPositionService $positions, private readonly IdempotencyService $idempotency, private readonly AttachmentService $attachments) {}
 
     public function types()
     {
@@ -77,18 +83,22 @@ class CashAccountController extends Controller
     {
         $company = $this->context->get();
         $accounts = CashAccount::where('company_id', $company->id)->get(['id', 'status', 'cash_account_type_id']);
+        $dashboard = $this->positions->dashboard($company);
 
-        return ApiResponse::success(['account_count' => $accounts->count(), 'active_account_count' => $accounts->where('status', 'active')->count(), 'restricted_account_count' => $accounts->where('status', 'restricted')->count(), 'draft_account_count' => $accounts->where('status', 'draft')->count(), 'position_by_currency' => $this->positions->grouped($company->id), 'as_of' => now()->toIso8601String()]);
+        return ApiResponse::success(['account_count' => $accounts->count(), 'active_account_count' => $accounts->where('status', 'active')->count(), 'restricted_account_count' => $accounts->where('status', 'restricted')->count(), 'draft_account_count' => $accounts->where('status', 'draft')->count(), 'pending_closure_account_count' => $accounts->where('status', 'pending_closure')->count(), 'position_by_currency' => $dashboard['position_by_currency'], 'metrics' => $dashboard['metrics'], 'source_owner' => $dashboard['source_owner'], 'source_as_of_at' => $dashboard['source_as_of_at'], 'freshness_state' => $dashboard['freshness_state'], 'currency_context' => $dashboard['currency_context'], 'as_of' => now()->toIso8601String()]);
     }
 
     public function needsAttention()
     {
         $company = $this->context->get();
+        $dashboard = $this->positions->dashboard($company);
         $drafts = CashAccount::where('company_id', $company->id)->where('status', 'draft')->get(['id', 'code', 'name', 'status']);
         $physicalWithoutCustodian = CashAccount::where('cash_accounts.company_id', $company->id)->where('cash_accounts.status', 'active')->whereHas('type', fn ($query) => $query->where('requires_custodian', true))->whereDoesntHave('custodians', fn ($query) => $query->where('status', 'active')->where('is_primary', true)->whereDate('effective_from', '<=', now()->toDateString())->where(fn ($inner) => $inner->whereNull('effective_to')->orWhereDate('effective_to', '>=', now()->toDateString())))->get(['id', 'code', 'name', 'status']);
         $pendingOpening = OpeningBalance::where('company_id', $company->id)->whereIn('status', ['submitted', 'approved'])->with('account')->get()->map(fn ($opening) => ['id' => $opening->id, 'status' => $opening->status, 'account' => $opening->account ? ['id' => $opening->account->id, 'code' => $opening->account->code, 'name' => $opening->account->name] : null]);
 
-        return ApiResponse::success(['draft_accounts' => $drafts, 'physical_accounts_missing_custodian' => $physicalWithoutCustodian, 'opening_balances_pending' => $pendingOpening, 'configuration' => ['opening_balance_offset_account_title_id' => $company->opening_balance_offset_account_title_id, 'ready_for_posting' => (bool) $company->opening_balance_offset_account_title_id]]);
+        $items = collect($dashboard['attention']['items'])->concat($drafts->map(fn ($account) => ['code' => 'draft_account', 'severity' => 'medium', 'title' => 'Draft Cash Account requires activation', 'count' => 1, 'source_owner' => 'MDS-700 Cash Accounts', 'source_id' => $account->id, 'detail' => $account]))->concat($physicalWithoutCustodian->map(fn ($account) => ['code' => 'missing_custodian', 'severity' => 'high', 'title' => 'Physical Cash Account has no primary custodian', 'count' => 1, 'source_owner' => 'MDS-700 Cash Accounts', 'source_id' => $account->id, 'detail' => $account]))->values();
+
+        return ApiResponse::success(['draft_accounts' => $drafts, 'physical_accounts_missing_custodian' => $physicalWithoutCustodian, 'opening_balances_pending' => $pendingOpening, 'items' => $items, 'total' => $items->count(), 'metrics' => $dashboard['metrics'], 'source_owner' => $dashboard['source_owner'], 'source_as_of_at' => $dashboard['source_as_of_at'], 'freshness_state' => $dashboard['freshness_state'], 'currency_context' => $dashboard['currency_context'], 'configuration' => ['opening_balance_offset_account_title_id' => $company->opening_balance_offset_account_title_id, 'ready_for_posting' => (bool) $company->opening_balance_offset_account_title_id]]);
     }
 
     public function store(StoreCashAccountRequest $request)
@@ -140,6 +150,65 @@ class CashAccountController extends Controller
     public function reactivate(TransitionCashAccountRequest $request, string $id)
     {
         return $this->transition($request, $id, 'reactivate', 'cash-accounts.account.reactivate');
+    }
+
+    public function requestClosure(CashAccountClosureRequest $request, string $id)
+    {
+        return $this->idempotency->run($request, 'cash-accounts.account.closure.request', $this->context->id(), function () use ($request, $id) {
+            return ApiResponse::success(new CashAccountResource($this->service->requestClosure($this->account($id), $request->validated(), $this->context->get(), $request)));
+        });
+    }
+
+    public function reviewClosure(CashAccountClosureActionRequest $request, string $id)
+    {
+        return $this->idempotency->run($request, 'cash-accounts.account.closure.review', $this->context->id(), function () use ($request, $id) {
+            return ApiResponse::success(new CashAccountResource($this->service->reviewClosure($this->account($id), $request->validated(), $this->context->get(), $request)));
+        });
+    }
+
+    public function approveClosure(CashAccountClosureActionRequest $request, string $id)
+    {
+        return $this->idempotency->run($request, 'cash-accounts.account.closure.approve', $this->context->id(), function () use ($request, $id) {
+            return ApiResponse::success(new CashAccountResource($this->service->approveClosure($this->account($id), $request->validated(), $this->context->get(), $request)));
+        });
+    }
+
+    public function resolveClosure(CashAccountClosureActionRequest $request, string $id)
+    {
+        return $this->idempotency->run($request, 'cash-accounts.account.closure.resolve', $this->context->id(), function () use ($request, $id) {
+            return ApiResponse::success(new CashAccountResource($this->service->resolveClosure($this->account($id), $request->validated(), $this->context->get(), $request)));
+        });
+    }
+
+    public function closureEvidence(EvidenceRequest $request, string $id)
+    {
+        return $this->idempotency->run($request, 'cash-accounts.account.closure.evidence', $this->context->id(), function () use ($request, $id) {
+            $account = $this->account($id);
+            if ($account->status !== 'pending_closure') {
+                throw new RegistryConflictException('Archive evidence can only be uploaded while closure is pending.');
+            }
+
+            return ApiResponse::success(new AttachmentResource($this->attachments->upload($request->file('file'), $account, $this->context->get(), $request)), 201);
+        });
+    }
+
+    public function closureEvidenceList(string $id)
+    {
+        return AttachmentResource::collection($this->account($id)->attachments()->orderByDesc('created_at')->paginate(50));
+    }
+
+    public function close(CashAccountClosureActionRequest $request, string $id)
+    {
+        return $this->idempotency->run($request, 'cash-accounts.account.closure.close', $this->context->id(), function () use ($request, $id) {
+            return ApiResponse::success(new CashAccountResource($this->service->close($this->account($id), $request->validated(), $this->context->get(), $request)));
+        });
+    }
+
+    public function cancelClosure(CashAccountClosureActionRequest $request, string $id)
+    {
+        return $this->idempotency->run($request, 'cash-accounts.account.closure.cancel', $this->context->id(), function () use ($request, $id) {
+            return ApiResponse::success(new CashAccountResource($this->service->cancelClosure($this->account($id), $request->validated(), $this->context->get(), $request)));
+        });
     }
 
     public function capabilities(CapabilityRequest $request, string $id)

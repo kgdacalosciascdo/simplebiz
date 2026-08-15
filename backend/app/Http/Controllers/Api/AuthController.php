@@ -8,6 +8,7 @@ use App\Support\ApiResponse;
 use App\Support\AuditService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Laravel\Sanctum\PersonalAccessToken;
 
 class AuthController extends Controller
 {
@@ -52,7 +53,7 @@ class AuthController extends Controller
     {
         $user = $request->user();
         $this->audit->record($request, 'auth.logout', null, null, [], ['user_id' => $user?->id], null, 'Signed out', 'An authenticated user signed out.');
-        $user?->currentAccessToken()?->delete();
+        PersonalAccessToken::findToken((string) $request->bearerToken())?->delete();
 
         return ApiResponse::success(['message' => 'Signed out.']);
     }
@@ -71,6 +72,10 @@ class AuthController extends Controller
             'currency' => $company->currency,
             'timezone' => $company->timezone,
             'locale' => $company->locale,
+            'date_format' => $company->date_format,
+            'number_format' => $company->number_format,
+            'paper_size' => $company->paper_size,
+            'settings_version' => $company->settings_version,
             'setup_status' => $company->setup_status,
             'membership_status' => $company->pivot?->status,
             'is_owner' => (bool) $company->pivot?->is_owner,

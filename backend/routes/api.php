@@ -12,6 +12,8 @@ use App\Http\Controllers\Api\CollectionsController;
 use App\Http\Controllers\Api\CompanyController;
 use App\Http\Controllers\Api\CompanyProfileController;
 use App\Http\Controllers\Api\CompanySetupController;
+use App\Http\Controllers\Api\CoreController;
+use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\ExpenseCompletionController;
 use App\Http\Controllers\Api\ExpenseController;
 use App\Http\Controllers\Api\HealthController;
@@ -26,6 +28,7 @@ use App\Http\Controllers\Api\ReconciliationController;
 use App\Http\Controllers\Api\ReferenceRegistryController;
 use App\Http\Controllers\Api\ReportsController;
 use App\Http\Controllers\Api\SalesController;
+use App\Http\Controllers\Api\SettingsController;
 use App\Http\Controllers\Api\StatementImportController;
 use App\Http\Controllers\Api\UnitController;
 use App\Http\Controllers\Api\UserAccessController;
@@ -47,6 +50,11 @@ Route::prefix('v1')->group(function () {
 
             Route::middleware('company.context')->group(function () {
                 Route::get('/context/company', [CompanyController::class, 'current']);
+                Route::get('/search', [CoreController::class, 'search'])->middleware('permission:core.search');
+                Route::get('/notifications', [CoreController::class, 'notifications']);
+                Route::post('/notifications/{id}/read', [CoreController::class, 'readNotification'])->whereUuid('id');
+                Route::post('/notifications/read-all', [CoreController::class, 'readAllNotifications']);
+                Route::get('/dashboard', [DashboardController::class, 'show']);
                 Route::prefix('reports')->group(function () {
                     Route::get('/catalog', [ReportsController::class, 'catalog'])->middleware('permission:reports.view');
                     Route::get('/catalog/{key}', [ReportsController::class, 'definition'])->middleware('permission:reports.catalog.detail');
@@ -257,17 +265,40 @@ Route::prefix('v1')->group(function () {
                 Route::prefix('sales')->group(function () {
                     Route::get('/lookups', [SalesController::class, 'lookups'])->middleware('permission:sales.view');
                     Route::get('/summary', [SalesController::class, 'summary'])->middleware('permission:sales.view');
+                    Route::get('/dashboard', [SalesController::class, 'dashboard'])->middleware('permission:sales.view');
+                    Route::get('/attention', [SalesController::class, 'attention'])->middleware('permission:sales.view');
                     Route::get('/', [SalesController::class, 'index'])->middleware('permission:sales.view');
                     Route::post('/', [SalesController::class, 'store'])->middleware('permission:sales.create');
+                    Route::get('/returns/eligible-lines', [SalesController::class, 'eligibleReturnLines'])->middleware('permission:sales.returns.view');
+                    Route::get('/returns', [SalesController::class, 'returns'])->middleware('permission:sales.returns.view');
+                    Route::post('/returns', [SalesController::class, 'storeReturn'])->middleware('permission:sales.returns.create');
+                    Route::get('/returns/{id}', [SalesController::class, 'showReturn'])->middleware('permission:sales.returns.view');
+                    Route::post('/returns/{id}/submit', [SalesController::class, 'returnAction'])->defaults('action', 'submit')->middleware('permission:sales.returns.submit');
+                    Route::post('/returns/{id}/review', [SalesController::class, 'returnAction'])->defaults('action', 'review')->middleware('permission:sales.returns.review');
+                    Route::post('/returns/{id}/approve', [SalesController::class, 'returnAction'])->defaults('action', 'approve')->middleware('permission:sales.returns.approve');
+                    Route::post('/returns/{id}/post', [SalesController::class, 'returnAction'])->defaults('action', 'post')->middleware('permission:sales.returns.post');
+                    Route::post('/returns/{id}/cancel', [SalesController::class, 'returnAction'])->defaults('action', 'cancel')->middleware('permission:sales.returns.update');
+                    Route::post('/returns/{id}/reverse', [SalesController::class, 'returnAction'])->defaults('action', 'reverse')->middleware('permission:sales.returns.reverse');
+                    Route::get('/adjustments', [SalesController::class, 'adjustments'])->middleware('permission:sales.adjustments.view');
+                    Route::post('/adjustments', [SalesController::class, 'storeAdjustment'])->middleware('permission:sales.adjustments.create');
+                    Route::get('/adjustments/{id}', [SalesController::class, 'showAdjustment'])->middleware('permission:sales.adjustments.view');
+                    Route::post('/adjustments/{id}/submit', [SalesController::class, 'adjustmentAction'])->defaults('action', 'submit')->middleware('permission:sales.adjustments.submit');
+                    Route::post('/adjustments/{id}/approve', [SalesController::class, 'adjustmentAction'])->defaults('action', 'approve')->middleware('permission:sales.adjustments.approve');
+                    Route::post('/adjustments/{id}/post', [SalesController::class, 'adjustmentAction'])->defaults('action', 'post')->middleware('permission:sales.adjustments.post');
+                    Route::post('/adjustments/{id}/cancel', [SalesController::class, 'adjustmentAction'])->defaults('action', 'cancel')->middleware('permission:sales.adjustments.update');
+                    Route::post('/adjustments/{id}/reverse', [SalesController::class, 'adjustmentAction'])->defaults('action', 'reverse')->middleware('permission:sales.adjustments.reverse');
                     Route::get('/{id}', [SalesController::class, 'show'])->middleware('permission:sales.view');
                     Route::patch('/{id}', [SalesController::class, 'update'])->middleware('permission:sales.update');
                     Route::post('/{id}/submit', [SalesController::class, 'action'])->defaults('action', 'submit')->middleware('permission:sales.submit');
                     Route::post('/{id}/review', [SalesController::class, 'action'])->defaults('action', 'review')->middleware('permission:sales.review');
                     Route::post('/{id}/return', [SalesController::class, 'action'])->defaults('action', 'return')->middleware('permission:sales.review');
                     Route::post('/{id}/approve', [SalesController::class, 'action'])->defaults('action', 'approve')->middleware('permission:sales.approve');
+                    Route::post('/{id}/paid-now', [SalesController::class, 'paidNow'])->middleware('permission:sales.post');
                     Route::post('/{id}/post', [SalesController::class, 'action'])->defaults('action', 'post')->middleware('permission:sales.post');
                     Route::post('/{id}/cancel', [SalesController::class, 'action'])->defaults('action', 'cancel')->middleware('permission:sales.cancel');
+                    Route::post('/{id}/reverse', [SalesController::class, 'reverse'])->middleware('permission:sales.reverse');
                     Route::get('/{id}/history', [SalesController::class, 'history'])->middleware('permission:sales.history');
+                    Route::get('/reports/{report}', [SalesController::class, 'report'])->middleware('permission:sales.reports.view');
                 });
                 Route::prefix('collections')->group(function () {
                     Route::get('/summary', [CollectionsController::class, 'summary'])->middleware('permission:collections.view');
@@ -394,7 +425,28 @@ Route::prefix('v1')->group(function () {
                 Route::post('/settings/users/invitations/{invitation}/cancel', [UserAccessController::class, 'cancel'])->middleware('permission:settings.users.manage');
                 Route::patch('/settings/users/{user}/role', [UserAccessController::class, 'changeRole'])->middleware('permission:settings.users.manage');
                 Route::patch('/settings/users/{user}/status/{status}', [UserAccessController::class, 'changeStatus'])->middleware('permission:settings.users.manage');
+                Route::get('/settings/users/{user}/history', [UserAccessController::class, 'history'])->middleware('permission:settings.users.view');
                 Route::get('/settings/activity', [UserAccessController::class, 'activity'])->middleware('permission:settings.activity.view');
+                Route::get('/settings/workspace', [SettingsController::class, 'workspace'])->middleware('permission:settings.workspace.view');
+                Route::get('/settings/account', [SettingsController::class, 'account'])->middleware('permission:settings.account.view');
+                Route::patch('/settings/account/profile', [SettingsController::class, 'updateProfile'])->middleware('permission:settings.profile.edit');
+                Route::patch('/settings/account/preferences', [SettingsController::class, 'updatePreferences'])->middleware('permission:settings.preferences.edit');
+                Route::get('/settings/access', [SettingsController::class, 'access'])->middleware('permission:settings.access.view');
+                Route::get('/settings/sessions', [SettingsController::class, 'sessions'])->middleware('permission:settings.sessions.view');
+                Route::delete('/settings/sessions/{token}', [SettingsController::class, 'terminateSession'])->middleware('permission:settings.sessions.terminate');
+                Route::post('/settings/sessions/terminate-others', [SettingsController::class, 'terminateOtherSessions'])->middleware('permission:settings.sessions.terminate');
+                Route::get('/settings/configuration', [SettingsController::class, 'configuration'])->middleware('permission:settings.configuration.view');
+                Route::get('/settings/configuration/changes', [SettingsController::class, 'changes'])->middleware('permission:settings.configuration.view');
+                Route::get('/settings/modules', [SettingsController::class, 'modules'])->middleware('permission:settings.modules.view');
+                Route::get('/settings/notifications', [SettingsController::class, 'notifications'])->middleware('permission:settings.notifications.view');
+                Route::patch('/settings/notifications', [SettingsController::class, 'updateNotifications'])->middleware('permission:settings.notifications.edit');
+                Route::get('/settings/audit', [SettingsController::class, 'audit'])->middleware('permission:settings.activity.view');
+                Route::get('/settings/exports', [SettingsController::class, 'exports'])->middleware('permission:settings.exports.view');
+                Route::post('/settings/exports', [SettingsController::class, 'createExport'])->middleware('permission:settings.exports.create');
+                Route::get('/settings/exports/{export}', [SettingsController::class, 'showExport'])->middleware('permission:settings.exports.view');
+                Route::get('/settings/exports/{export}/download', [SettingsController::class, 'downloadExport'])->middleware('permission:settings.exports.view');
+                Route::post('/settings/ownership-transfers', [SettingsController::class, 'requestOwnershipTransfer'])->middleware('permission:settings.owner.transfer');
+                Route::post('/settings/ownership-transfers/{transfer}/accept', [SettingsController::class, 'acceptOwnershipTransfer'])->middleware('permission:settings.account.view');
 
                 Route::prefix('cash-accounts')->group(function () {
                     Route::get('/types', [CashAccountController::class, 'types'])->middleware('permission:cash-accounts.accounts.view');
@@ -531,6 +583,14 @@ Route::prefix('v1')->group(function () {
                     Route::post('/{id}/unrestrict', [CashAccountController::class, 'unrestrict'])->middleware('permission:cash-accounts.accounts.activate');
                     Route::post('/{id}/deactivate', [CashAccountController::class, 'deactivate'])->middleware('permission:cash-accounts.accounts.deactivate');
                     Route::post('/{id}/reactivate', [CashAccountController::class, 'reactivate'])->middleware('permission:cash-accounts.accounts.reactivate');
+                    Route::post('/{id}/closure', [CashAccountController::class, 'requestClosure'])->middleware('permission:cash-accounts.account.closure.request');
+                    Route::post('/{id}/closure/review', [CashAccountController::class, 'reviewClosure'])->middleware('permission:cash-accounts.account.closure.review');
+                    Route::post('/{id}/closure/resolve', [CashAccountController::class, 'resolveClosure'])->middleware('permission:cash-accounts.account.closure.review');
+                    Route::post('/{id}/closure/approve', [CashAccountController::class, 'approveClosure'])->middleware('permission:cash-accounts.account.closure.approve');
+                    Route::post('/{id}/closure/close', [CashAccountController::class, 'close'])->middleware('permission:cash-accounts.account.closure.close');
+                    Route::post('/{id}/closure/cancel', [CashAccountController::class, 'cancelClosure'])->middleware('permission:cash-accounts.account.closure.cancel');
+                    Route::post('/{id}/closure/evidence', [CashAccountController::class, 'closureEvidence'])->middleware('permission:cash-accounts.account.closure.request');
+                    Route::get('/{id}/closure/evidence', [CashAccountController::class, 'closureEvidenceList'])->middleware('permission:cash-accounts.accounts.view');
                     Route::get('/{id}/capabilities', [CashAccountController::class, 'show'])->middleware('permission:cash-accounts.accounts.view');
                     Route::patch('/{id}/capabilities', [CashAccountController::class, 'capabilities'])->middleware('permission:cash-accounts.capabilities.manage');
                     Route::get('/{id}/custodians', [CashAccountController::class, 'custodians'])->middleware('permission:cash-accounts.custodians.view');
@@ -555,6 +615,20 @@ Route::prefix('v1')->group(function () {
                     Route::get('/business-partners/{businessPartner}/history', [BusinessPartnerController::class, 'history'])->middleware('permission:master-registries.history');
                     Route::post('/business-partners/{businessPartner}/contacts', [BusinessPartnerController::class, 'contact'])->middleware('permission:master-registries.business-partners.update');
                     Route::post('/business-partners/{businessPartner}/addresses', [BusinessPartnerController::class, 'address'])->middleware('permission:master-registries.business-partners.update');
+                    Route::patch('/business-partners/{businessPartner}/contacts/{contact}', [BusinessPartnerController::class, 'updateContact'])->middleware('permission:master-registries.business-partners.update');
+                    Route::post('/business-partners/{businessPartner}/contacts/{contact}/deactivate', [BusinessPartnerController::class, 'transitionContact'])->defaults('status', 'inactive')->middleware('permission:master-registries.business-partners.deactivate');
+                    Route::post('/business-partners/{businessPartner}/contacts/{contact}/reactivate', [BusinessPartnerController::class, 'transitionContact'])->defaults('status', 'active')->middleware('permission:master-registries.business-partners.reactivate');
+                    Route::get('/business-partners/{businessPartner}/contacts/{contact}/history', [BusinessPartnerController::class, 'historyContact'])->middleware('permission:master-registries.history');
+                    Route::patch('/business-partners/{businessPartner}/addresses/{address}', [BusinessPartnerController::class, 'updateAddress'])->middleware('permission:master-registries.business-partners.update');
+                    Route::post('/business-partners/{businessPartner}/addresses/{address}/deactivate', [BusinessPartnerController::class, 'transitionAddress'])->defaults('status', 'inactive')->middleware('permission:master-registries.business-partners.deactivate');
+                    Route::post('/business-partners/{businessPartner}/addresses/{address}/reactivate', [BusinessPartnerController::class, 'transitionAddress'])->defaults('status', 'active')->middleware('permission:master-registries.business-partners.reactivate');
+                    Route::get('/business-partners/{businessPartner}/addresses/{address}/history', [BusinessPartnerController::class, 'historyAddress'])->middleware('permission:master-registries.history');
+                    Route::get('/business-partners/{businessPartner}/identifiers', [BusinessPartnerController::class, 'identifiers'])->middleware('permission:master-registries.business-partners.view');
+                    Route::post('/business-partners/{businessPartner}/identifiers', [BusinessPartnerController::class, 'storeIdentifier'])->middleware('permission:master-registries.business-partners.update');
+                    Route::patch('/business-partners/{businessPartner}/identifiers/{identifier}', [BusinessPartnerController::class, 'updateIdentifier'])->middleware('permission:master-registries.business-partners.update');
+                    Route::post('/business-partners/{businessPartner}/identifiers/{identifier}/deactivate', [BusinessPartnerController::class, 'transitionIdentifier'])->defaults('status', 'inactive')->middleware('permission:master-registries.business-partners.deactivate');
+                    Route::post('/business-partners/{businessPartner}/identifiers/{identifier}/reactivate', [BusinessPartnerController::class, 'transitionIdentifier'])->defaults('status', 'active')->middleware('permission:master-registries.business-partners.reactivate');
+                    Route::get('/business-partners/{businessPartner}/identifiers/{identifier}/history', [BusinessPartnerController::class, 'identifierHistory'])->middleware('permission:master-registries.history');
 
                     Route::get('/products-services', [ProductServiceController::class, 'index'])->middleware('permission:master-registries.items.view');
                     Route::post('/products-services', [ProductServiceController::class, 'store'])->middleware('permission:master-registries.items.create');
@@ -564,6 +638,12 @@ Route::prefix('v1')->group(function () {
                     Route::post('/products-services/{productService}/deactivate', [ProductServiceController::class, 'deactivate'])->middleware('permission:master-registries.items.deactivate');
                     Route::post('/products-services/{productService}/reactivate', [ProductServiceController::class, 'reactivate'])->middleware('permission:master-registries.items.reactivate');
                     Route::get('/products-services/{productService}/history', [ProductServiceController::class, 'history'])->middleware('permission:master-registries.history');
+                    Route::get('/products-services/{productService}/identifiers', [ProductServiceController::class, 'identifiers'])->middleware('permission:master-registries.items.view');
+                    Route::post('/products-services/{productService}/identifiers', [ProductServiceController::class, 'storeIdentifier'])->middleware('permission:master-registries.items.update');
+                    Route::patch('/products-services/{productService}/identifiers/{identifier}', [ProductServiceController::class, 'updateIdentifier'])->middleware('permission:master-registries.items.update');
+                    Route::post('/products-services/{productService}/identifiers/{identifier}/deactivate', [ProductServiceController::class, 'transitionIdentifier'])->defaults('status', 'inactive')->middleware('permission:master-registries.items.deactivate');
+                    Route::post('/products-services/{productService}/identifiers/{identifier}/reactivate', [ProductServiceController::class, 'transitionIdentifier'])->defaults('status', 'active')->middleware('permission:master-registries.items.reactivate');
+                    Route::get('/products-services/{productService}/identifiers/{identifier}/history', [ProductServiceController::class, 'identifierHistory'])->middleware('permission:master-registries.history');
 
                     Route::get('/categories', [CategoryController::class, 'index'])->middleware('permission:master-registries.categories.view');
                     Route::post('/categories', [CategoryController::class, 'store'])->middleware('permission:master-registries.categories.create');

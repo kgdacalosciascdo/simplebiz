@@ -91,12 +91,32 @@ class CompanySetupController extends Controller
 
                 $permissions = [
                     'core.manage' => ['Manage Core Platform', 'core'],
+                    'core.search' => ['Use Global Search', 'core'],
                     'settings.company.view' => ['View Company Setup', 'settings'],
                     'settings.company.edit' => ['Edit Company Setup', 'settings'],
                     'settings.users.view' => ['View Users & Access', 'settings'],
                     'settings.users.invite' => ['Invite Users', 'settings'],
                     'settings.users.manage' => ['Manage User Access', 'settings'],
                     'settings.activity.view' => ['View Administrative Activity', 'settings'],
+                    'settings.workspace.view' => ['View Settings Workspace', 'settings'],
+                    'settings.account.view' => ['View Account & Subscription', 'settings'],
+                    'settings.profile.edit' => ['Edit Personal Profile', 'settings'],
+                    'settings.preferences.edit' => ['Edit Personal Preferences', 'settings'],
+                    'settings.access.view' => ['View Company Access', 'settings'],
+                    'settings.sessions.view' => ['View Security Sessions', 'settings'],
+                    'settings.sessions.terminate' => ['Terminate Security Sessions', 'settings'],
+                    'settings.configuration.view' => ['View Effective Configuration', 'settings'],
+                    'settings.configuration.manage' => ['Manage Company Configuration', 'settings'],
+                    'settings.notifications.view' => ['View Notification Settings', 'settings'],
+                    'settings.notifications.edit' => ['Edit Notification Settings', 'settings'],
+                    'settings.modules.view' => ['View Module Preferences', 'settings'],
+                    'settings.modules.edit' => ['Manage Module Preferences', 'settings'],
+                    'settings.numbering.view' => ['View Numbering Configuration', 'settings'],
+                    'settings.finance.view' => ['View Financial Configuration', 'settings'],
+                    'settings.exports.create' => ['Request Administrative Export', 'settings'],
+                    'settings.exports.view' => ['View Administrative Exports', 'settings'],
+                    'settings.audit.export' => ['Export Administrative Audit', 'settings'],
+                    'settings.owner.transfer' => ['Transfer Company Ownership', 'settings'],
                     'master-registries.view' => ['View Master Registries', 'master-registries'],
                     'master-registries.search' => ['Search Master Registries', 'master-registries'],
                     'master-registries.history' => ['View Master Registry History', 'master-registries'],
@@ -143,6 +163,7 @@ class CompanySetupController extends Controller
                 $administrator = Role::create(['company_id' => $company->id, 'name' => 'Administrator', 'slug' => 'administrator', 'system_key' => 'administrator', 'is_protected' => false, 'status' => 'active']);
                 $member = Role::create(['company_id' => $company->id, 'name' => 'Member', 'slug' => 'member', 'system_key' => 'member', 'is_protected' => false, 'status' => 'active']);
                 $registryPermissionIds = Permission::where('module', 'master-registries')->pluck('id')->all();
+                $coreSearchPermissionIds = Permission::where('key', 'core.search')->pluck('id')->all();
                 $collectionsPermissionIds = Permission::where('module', 'collections')->pluck('id')->all();
                 $purchasePermissionIds = Permission::where('module', 'purchases')->pluck('id')->all();
                 $paymentsPermissionIds = Permission::where('module', 'payments')->pluck('id')->all();
@@ -166,12 +187,13 @@ class CompanySetupController extends Controller
                 $cashMovementAdministratorPermissionIds = Permission::whereIn('key', ['cash-accounts.movements.view', 'cash-accounts.movements.history', 'cash-accounts.movements.evidence.view', 'cash-accounts.movements.evidence.download', 'cash-accounts.movements.evidence.upload', 'cash-accounts.cash-in.create', 'cash-accounts.cash-in.update', 'cash-accounts.cash-in.submit', 'cash-accounts.cash-out.create', 'cash-accounts.cash-out.update', 'cash-accounts.cash-out.submit', 'cash-accounts.transfers.view', 'cash-accounts.transfers.create', 'cash-accounts.transfers.update', 'cash-accounts.transfers.submit', 'cash-accounts.denominations.view', 'cash-accounts.cash-counts.view', 'cash-accounts.cash-counts.create', 'cash-accounts.cash-counts.update', 'cash-accounts.cash-counts.start', 'cash-accounts.cash-counts.attempts', 'cash-accounts.cash-counts.submit', 'cash-accounts.cash-counts.evidence.view', 'cash-accounts.cash-counts.evidence.upload', 'cash-accounts.variances.view', 'cash-accounts.adjustments.view', 'cash-accounts.handovers.view', 'cash-accounts.cash-counts.reports.view', 'cash-accounts.statements.view', 'cash-accounts.statements.import', 'cash-accounts.statements.validate', 'cash-accounts.statements.evidence.view', 'cash-accounts.reconciliation.matches.view', 'cash-accounts.reconciliation.matches.create', 'cash-accounts.reconciliation.matches.confirm', 'cash-accounts.reconciliation.matches.unmatch', 'cash-accounts.reconciliations.view', 'cash-accounts.reconciliations.create', 'cash-accounts.reconciliations.update', 'cash-accounts.reconciliations.prepare', 'cash-accounts.reconciliations.submit', 'cash-accounts.reconciliations.review'])->pluck('id')->all();
                 $memberCashPermissionIds = Permission::where('module', 'cash-accounts')->whereIn('key', ['cash-accounts.view', 'cash-accounts.search', 'cash-accounts.history', 'cash-accounts.balance.view', 'cash-accounts.accounts.view', 'cash-accounts.custodians.view', 'cash-accounts.opening-balances.view', 'cash-accounts.evidence.view', 'cash-accounts.denominations.view', 'cash-accounts.cash-counts.view', 'cash-accounts.cash-counts.evidence.view', 'cash-accounts.variances.view', 'cash-accounts.handovers.view', 'cash-accounts.cash-counts.reports.view', 'cash-accounts.statements.view', 'cash-accounts.statements.evidence.view', 'cash-accounts.reconciliation.matches.view', 'cash-accounts.reconciliations.view'])->pluck('id')->all();
                 $owner->permissions()->sync(array_values(array_unique([...$permissionIds, ...$registryPermissionIds, ...$collectionsPermissionIds, ...$purchasePermissionIds, ...$paymentsPermissionIds, ...$reportsPermissionIds, ...$allCashAccountPermissionIds])));
-                $administrator->permissions()->sync(array_values(array_unique([...$registryPermissionIds, ...$collectionsPermissionIds, ...$purchasePermissionIds, ...$paymentsPermissionIds, ...$reportsPermissionIds, ...$cashAccountPermissionIds, ...$cashMovementAdministratorPermissionIds])));
+                $administrator->permissions()->sync(array_values(array_unique([...$coreSearchPermissionIds, ...$registryPermissionIds, ...$collectionsPermissionIds, ...$purchasePermissionIds, ...$paymentsPermissionIds, ...$reportsPermissionIds, ...$cashAccountPermissionIds, ...$cashMovementAdministratorPermissionIds])));
                 $memberRegistryPermissionIds = Permission::where('module', 'master-registries')->where(fn ($query) => $query->whereIn('key', ['master-registries.view', 'master-registries.search', 'master-registries.history'])->orWhere('key', 'like', 'master-registries.%.view'))->pluck('id')->all();
                 $memberPurchasePermissionIds = Permission::whereIn('key', ['purchases.view', 'purchases.history', 'purchases.orders.view', 'purchases.receipts.view', 'purchases.invoices.view', 'purchases.payables.view', 'purchases.payables.aging.view', 'purchases.returns.view', 'purchases.adjustments.view', 'purchases.invoices.correction.view', 'purchases.matches.view', 'purchases.payables.effects.view', 'purchases.ledger.view'])->pluck('id')->all();
                 $memberPaymentPermissionIds = Permission::whereIn('key', ['payments.view', 'payments.history', 'payments.workbench.view'])->pluck('id')->all();
                 $memberReportsPermissionIds = Permission::where('module', 'reports')->whereIn('key', ['reports.view', 'reports.display', 'reports.catalog.detail', 'reports.history.view', 'reports.snapshot.view'])->pluck('id')->all();
-                $member->permissions()->sync(array_values(array_unique([...$memberRegistryPermissionIds, ...$memberPurchasePermissionIds, ...$memberPaymentPermissionIds, ...$memberReportsPermissionIds, ...$memberCashPermissionIds])));
+                $memberSettingsPermissionIds = Permission::whereIn('key', ['settings.workspace.view', 'settings.account.view', 'settings.profile.edit', 'settings.preferences.edit', 'settings.access.view', 'settings.sessions.view', 'settings.notifications.view', 'settings.modules.view', 'settings.configuration.view'])->pluck('id')->all();
+                $member->permissions()->sync(array_values(array_unique([...$coreSearchPermissionIds, ...$memberRegistryPermissionIds, ...$memberPurchasePermissionIds, ...$memberPaymentPermissionIds, ...$memberReportsPermissionIds, ...$memberCashPermissionIds, ...$memberSettingsPermissionIds])));
                 DB::table('role_user')->insert(['role_id' => $owner->id, 'user_id' => $user->id, 'company_id' => $company->id, 'created_at' => now(), 'updated_at' => now()]);
 
                 $request->setUserResolver(fn () => $user);

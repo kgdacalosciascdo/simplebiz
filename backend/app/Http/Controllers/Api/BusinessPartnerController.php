@@ -6,9 +6,19 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\MasterRegistries\StoreAddressRequest;
 use App\Http\Requests\MasterRegistries\StoreBusinessPartnerRequest;
 use App\Http\Requests\MasterRegistries\StoreContactRequest;
+use App\Http\Requests\MasterRegistries\StoreExternalIdentifierRequest;
+use App\Http\Requests\MasterRegistries\UpdateAddressRequest;
 use App\Http\Requests\MasterRegistries\UpdateBusinessPartnerRequest;
+use App\Http\Requests\MasterRegistries\UpdateContactRequest;
+use App\Http\Requests\MasterRegistries\UpdateExternalIdentifierRequest;
+use App\Http\Resources\MasterRegistries\BusinessPartnerAddressResource;
+use App\Http\Resources\MasterRegistries\BusinessPartnerContactResource;
 use App\Http\Resources\MasterRegistries\BusinessPartnerResource;
+use App\Http\Resources\MasterRegistries\RegistryExternalIdentifierResource;
 use App\Models\BusinessPartner;
+use App\Models\BusinessPartnerAddress;
+use App\Models\BusinessPartnerContact;
+use App\Models\RegistryExternalIdentifier;
 use App\Services\MasterRegistryService;
 use App\Support\ApiResponse;
 use App\Support\CompanyContext;
@@ -30,7 +40,7 @@ class BusinessPartnerController extends Controller
 
     public function show(string $businessPartner)
     {
-        $record = BusinessPartner::where('company_id', $this->context->id())->with(['roles', 'contacts', 'addresses'])->whereKey($businessPartner)->firstOrFail();
+        $record = BusinessPartner::where('company_id', $this->context->id())->with(['roles', 'contacts', 'addresses', 'externalIdentifiers'])->whereKey($businessPartner)->firstOrFail();
 
         return ApiResponse::success((new BusinessPartnerResource($record))->resolve());
     }
@@ -92,5 +102,88 @@ class BusinessPartnerController extends Controller
         $partner = BusinessPartner::where('company_id', $this->context->id())->whereKey($businessPartner)->firstOrFail();
 
         return ApiResponse::success($this->service->createAddress($partner, $request->validated(), $this->context->get(), $request), 201);
+    }
+
+    public function updateContact(UpdateContactRequest $request, string $businessPartner, string $contact)
+    {
+        $record = BusinessPartnerContact::where('company_id', $this->context->id())->where('business_partner_id', $businessPartner)->whereKey($contact)->firstOrFail();
+
+        return ApiResponse::success((new BusinessPartnerContactResource($this->service->updateContact($record, $request->validated(), $this->context->get(), $request)))->resolve());
+    }
+
+    public function updateAddress(UpdateAddressRequest $request, string $businessPartner, string $address)
+    {
+        $record = BusinessPartnerAddress::where('company_id', $this->context->id())->where('business_partner_id', $businessPartner)->whereKey($address)->firstOrFail();
+
+        return ApiResponse::success((new BusinessPartnerAddressResource($this->service->updateAddress($record, $request->validated(), $this->context->get(), $request)))->resolve());
+    }
+
+    public function transitionContact(Request $request, string $businessPartner, string $contact, string $status)
+    {
+        $input = $request->validate(['reason' => ['required', 'string', 'max:500']]);
+        $record = BusinessPartnerContact::where('company_id', $this->context->id())->where('business_partner_id', $businessPartner)->whereKey($contact)->firstOrFail();
+
+        return ApiResponse::success((new BusinessPartnerContactResource($this->service->transitionContact($record, $status, $input['reason'], $this->context->get(), $request)))->resolve());
+    }
+
+    public function transitionAddress(Request $request, string $businessPartner, string $address, string $status)
+    {
+        $input = $request->validate(['reason' => ['required', 'string', 'max:500']]);
+        $record = BusinessPartnerAddress::where('company_id', $this->context->id())->where('business_partner_id', $businessPartner)->whereKey($address)->firstOrFail();
+
+        return ApiResponse::success((new BusinessPartnerAddressResource($this->service->transitionAddress($record, $status, $input['reason'], $this->context->get(), $request)))->resolve());
+    }
+
+    public function historyContact(string $businessPartner, string $contact)
+    {
+        BusinessPartnerContact::where('company_id', $this->context->id())->where('business_partner_id', $businessPartner)->whereKey($contact)->firstOrFail();
+        $page = $this->service->history('business_partner_contact', $contact, $this->context->get());
+
+        return ApiResponse::success($page->items(), 200, ['pagination' => ['current_page' => $page->currentPage(), 'last_page' => $page->lastPage(), 'per_page' => $page->perPage(), 'total' => $page->total()]]);
+    }
+
+    public function historyAddress(string $businessPartner, string $address)
+    {
+        BusinessPartnerAddress::where('company_id', $this->context->id())->where('business_partner_id', $businessPartner)->whereKey($address)->firstOrFail();
+        $page = $this->service->history('business_partner_address', $address, $this->context->get());
+
+        return ApiResponse::success($page->items(), 200, ['pagination' => ['current_page' => $page->currentPage(), 'last_page' => $page->lastPage(), 'per_page' => $page->perPage(), 'total' => $page->total()]]);
+    }
+
+    public function identifiers(string $businessPartner)
+    {
+        BusinessPartner::where('company_id', $this->context->id())->whereKey($businessPartner)->firstOrFail();
+
+        return ApiResponse::success(RegistryExternalIdentifierResource::collection(RegistryExternalIdentifier::where('company_id', $this->context->id())->where('registry_type', 'business_partner')->where('record_id', $businessPartner)->orderBy('identifier_type')->get())->resolve());
+    }
+
+    public function storeIdentifier(StoreExternalIdentifierRequest $request, string $businessPartner)
+    {
+        $partner = BusinessPartner::where('company_id', $this->context->id())->whereKey($businessPartner)->firstOrFail();
+
+        return $this->idempotency->run($request, 'master.business_partner.identifier.create', $this->context->id(), fn () => ApiResponse::success((new RegistryExternalIdentifierResource($this->service->createExternalIdentifier($partner, 'business_partner', $request->validated(), $this->context->get(), $request)))->resolve(), 201));
+    }
+
+    public function updateIdentifier(UpdateExternalIdentifierRequest $request, string $businessPartner, string $identifier)
+    {
+        $record = RegistryExternalIdentifier::where('company_id', $this->context->id())->where('registry_type', 'business_partner')->where('record_id', $businessPartner)->whereKey($identifier)->firstOrFail();
+
+        return ApiResponse::success((new RegistryExternalIdentifierResource($this->service->updateExternalIdentifier($record, $request->validated(), $this->context->get(), $request)))->resolve());
+    }
+
+    public function transitionIdentifier(Request $request, string $businessPartner, string $identifier, string $status)
+    {
+        $input = $request->validate(['reason' => ['required', 'string', 'max:500']]);
+        $record = RegistryExternalIdentifier::where('company_id', $this->context->id())->where('registry_type', 'business_partner')->where('record_id', $businessPartner)->whereKey($identifier)->firstOrFail();
+
+        return ApiResponse::success((new RegistryExternalIdentifierResource($this->service->transitionExternalIdentifier($record, $status, $input['reason'], $this->context->get(), $request)))->resolve());
+    }
+
+    public function identifierHistory(string $businessPartner, string $identifier)
+    {
+        BusinessPartner::where('company_id', $this->context->id())->whereKey($businessPartner)->firstOrFail();
+        $page = $this->service->historyExternalIdentifier($identifier, $this->context->get(), 'business_partner');
+
+        return ApiResponse::success($page->items(), 200, ['pagination' => ['current_page' => $page->currentPage(), 'last_page' => $page->lastPage(), 'per_page' => $page->perPage(), 'total' => $page->total()]]);
     }
 }

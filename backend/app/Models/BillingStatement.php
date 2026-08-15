@@ -19,7 +19,7 @@ class BillingStatement extends Model
 
     protected function casts(): array
     {
-        return ['statement_date' => 'date', 'period_from' => 'date', 'period_to' => 'date', 'as_of_at' => 'datetime', 'opening_balance' => 'decimal:6', 'period_charges' => 'decimal:6', 'period_credits' => 'decimal:6', 'period_applications' => 'decimal:6', 'ending_balance' => 'decimal:6', 'filters' => 'array', 'generated_at' => 'datetime', 'issued_at' => 'datetime', 'cancelled_at' => 'datetime', 'version' => 'integer'];
+        return ['statement_date' => 'date', 'period_from' => 'date', 'period_to' => 'date', 'as_of_at' => 'datetime', 'opening_balance' => 'decimal:6', 'period_charges' => 'decimal:6', 'period_credits' => 'decimal:6', 'period_applications' => 'decimal:6', 'ending_balance' => 'decimal:6', 'filters' => 'array', 'source_snapshot' => 'array', 'generated_at' => 'datetime', 'issued_at' => 'datetime', 'cancelled_at' => 'datetime', 'version' => 'integer'];
     }
 
     public function customer()

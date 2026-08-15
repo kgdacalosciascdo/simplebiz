@@ -271,6 +271,66 @@ final class CollectionsService
         return $this->load($result);
     }
 
+    public function postPaidNow(array $input, Company $company, Request $request, Sale $sale): Receipt
+    {
+        $existing = Receipt::where('company_id', $company->id)
+            ->where('source_sale_id', $sale->id)
+            ->where('receipt_type', 'paid_now_sale_receipt')
+            ->latest('created_at')
+            ->first();
+
+        if ($existing?->status === 'posted') {
+            if (bccomp((string) $existing->amount, (string) $input['amount'], 6) !== 0) {
+                throw new RegistryConflictException('A different paid-now receipt already exists for this Sale.', ['idempotency_conflict' => true]);
+            }
+
+            return $this->load($existing);
+        }
+        if ($existing && ! in_array($existing->status, ['draft', 'for_approval', 'approved'], true)) {
+            throw new RegistryConflictException('The paid-now receipt cannot be retried from its current status.', ['status' => $existing->status]);
+        }
+        if ($existing && bccomp((string) $existing->amount, (string) $input['amount'], 6) !== 0) {
+            throw new RegistryConflictException('A different paid-now receipt already exists for this Sale.', ['idempotency_conflict' => true]);
+        }
+
+        $receivable = ReceivableOpenItem::where('company_id', $company->id)
+            ->where('source_sale_id', $sale->id)
+            ->lockForUpdate()
+            ->first();
+        if (! $receivable) {
+            throw new RegistryConflictException('The posted cash Sale has no receivable open item to settle.', ['dependency' => 'receivable_open_item']);
+        }
+        if ((float) $input['amount'] > (float) $receivable->remaining_amount) {
+            throw new RegistryConflictException('Paid-now amount exceeds the remaining Sale balance.', ['amount' => 'The payment amount must be equal to or less than the remaining balance.']);
+        }
+
+        $payload = array_merge($input, [
+            'receipt_type' => 'paid_now_sale_receipt',
+            'applications' => [[
+                'receivable_open_item_id' => $receivable->id,
+                'amount' => $input['amount'],
+            ]],
+        ]);
+        $receipt = $existing ?: $this->createDraft($payload, $company, $request);
+
+        if ($receipt->status !== 'approved') {
+            $receipt = DB::transaction(function () use ($receipt, $company, $request) {
+                $locked = Receipt::where('company_id', $company->id)->whereKey($receipt->id)->lockForUpdate()->firstOrFail();
+                $from = $locked->status;
+                if (! in_array($from, ['draft', 'for_approval'], true)) {
+                    return $locked->refresh();
+                }
+                $locked->update(['status' => 'approved', 'approved_by' => $request->user()?->id, 'approved_at' => now(), 'version' => $locked->version + 1]);
+                $this->history($locked, $from, 'approved', $company, $request, 'Paid-now completion authorized the linked customer receipt.');
+
+                return $locked->refresh();
+            });
+            $this->audit->record($request, 'collections.receipt.approved', $receipt, $company->id, [], $this->safe($receipt), null, 'Paid-now receipt approved', 'The linked MDS-300 receipt was authorized by the paid-now Sales workflow.');
+        }
+
+        return $this->post($receipt, $company, $request);
+    }
+
     public function applyUnapplied(array $input, Company $company, Request $request): PaymentApplication
     {
         $result = DB::transaction(function () use ($input, $company, $request) {

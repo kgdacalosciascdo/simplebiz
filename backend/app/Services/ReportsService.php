@@ -67,6 +67,15 @@ final class ReportsService
         return [$items, ['categories' => ReportCategory::where('status', 'active')->orderBy('display_order')->get(['code', 'name', 'description']), 'count' => count($items)]];
     }
 
+    /**
+     * Read-only MDS-900 source projection for the MDS-100 Dashboard.
+     * The governed analytics implementation remains the owner of the metrics.
+     */
+    public function businessPerformanceForDashboard(Company $company, Request $request): array
+    {
+        return $this->businessPerformance($company, $request);
+    }
+
     public function definition(Company $company, Request $request, string $key, ?int $version = null): array
     {
         $definition = $this->resolveDefinition($key, $version);
@@ -536,6 +545,7 @@ final class ReportsService
             'collections.payment_method_summary' => $this->collections->report('payment_method_summary', $company, $sourceRequest),
             'sales.sales_register' => $this->sales->report('sales_register', $company, $sourceRequest),
             'sales.sales_by_product' => $this->sales->report('sales_by_product', $company, $sourceRequest),
+            'sales.sales_returns_adjustments' => $this->sales->report('sales_returns_adjustments', $company, $sourceRequest),
             'sales.receivables_aging' => $this->sales->report('receivables_aging', $company, $sourceRequest),
             'purchases.purchase-register' => $this->purchases->reports('purchase-register', $company, $sourceRequest),
             'purchases.payables-aging' => $this->purchases->reports('payables-aging', $company, $sourceRequest),
@@ -547,6 +557,11 @@ final class ReportsService
             'expenses.by-category' => $this->expenseCompletion->report('by-category', $company, $sourceRequest),
             'cash-accounts.cash_position' => $this->cashPositions->report('cash_position', $company, $sourceRequest),
             'cash-accounts.cash_account_ledger' => $this->cashPositions->report('cash_account_ledger', $company, $sourceRequest),
+            'cash-accounts.cash_movement_history' => $this->cashPositions->report('cash_movement_history', $company, $sourceRequest),
+            'cash-accounts.cash_transfer_history' => $this->cashPositions->report('cash_transfer_history', $company, $sourceRequest),
+            'cash-accounts.cash_count' => $this->cashPositions->report('cash_count', $company, $sourceRequest),
+            'cash-accounts.cash_reconciliation' => $this->cashPositions->report('cash_reconciliation', $company, $sourceRequest),
+            'cash-accounts.cash_exceptions' => $this->cashPositions->report('cash_exceptions', $company, $sourceRequest),
             'reports.business_performance' => $this->businessPerformance($company, $sourceRequest),
             'reports.voided_reversed' => $this->voidedAndReversed($company, $sourceRequest),
             'reports.export_history' => ['rows' => ReportAccessAudit::where('company_id', $company->id)->with('definition')->latest()->limit(500)->get(), 'source_as_of_at' => now(), 'freshness_state' => 'current'],

@@ -36,4 +36,10 @@ class BusinessPartner extends Model
     {
         return $this->hasMany(BusinessPartnerAddress::class);
     }
+
+    public function externalIdentifiers()
+    {
+        return $this->hasMany(RegistryExternalIdentifier::class, 'record_id')
+            ->where('registry_type', 'business_partner');
+    }
 }

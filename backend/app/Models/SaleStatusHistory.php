@@ -16,4 +16,9 @@ class SaleStatusHistory extends Model
     protected $keyType = 'string';
 
     protected $guarded = ['id'];
+
+    public function sale()
+    {
+        return $this->belongsTo(Sale::class);
+    }
 }

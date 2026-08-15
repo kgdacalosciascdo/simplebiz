@@ -425,6 +425,50 @@ final class InventoryService
     }
 
     /**
+     * Post the stock restoration caused by an MDS-200 Sales Return.
+     * Sales owns the commercial return document; this method keeps the
+     * resulting on-hand balance and movement identity inside MDS-600.
+     */
+    public function postSalesReturn(array $lines, Company $company, Request $request, string $sourceType, string $sourceId, string $documentNumber, $businessDate, ?string $reasonCodeId = null): array
+    {
+        return DB::transaction(function () use ($lines, $company, $request, $sourceType, $sourceId, $documentNumber, $businessDate, $reasonCodeId) {
+            $movements = [];
+            foreach ($lines as $line) {
+                if (! $line->stock_managed_snapshot) {
+                    continue;
+                }
+                $movement = $this->postMovement(
+                    $company,
+                    $line->product_service_id,
+                    $line->warehouse_id,
+                    $line->stock_location_id,
+                    $line->unit_of_measure_id,
+                    'sales_return',
+                    'in',
+                    (string) $line->quantity,
+                    $businessDate,
+                    'sales',
+                    $sourceType,
+                    $sourceId,
+                    $line->id,
+                    $documentNumber,
+                    'Stock restoration for Sales Return '.$documentNumber,
+                    $reasonCodeId,
+                    $request,
+                    null,
+                    null,
+                    null,
+                    null,
+                    'sales_return'
+                );
+                $movements[$line->id] = $movement;
+            }
+
+            return $movements;
+        });
+    }
+
+    /**
      * Refresh the MDS-600 incoming projection from approved open purchase orders.
      * This never changes on-hand stock or creates a stock movement.
      */

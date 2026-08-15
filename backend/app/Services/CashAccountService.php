@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Events\CashAccountLifecycleEvent;
 use App\Exceptions\RegistryConflictException;
 use App\Models\AccountTitle;
 use App\Models\Branch;
@@ -75,6 +76,13 @@ final class CashAccountService
             throw new RegistryConflictException('Only draft or active Cash Account profiles may be edited.');
         }
         $type = $this->type($input['cash_account_type_id'] ?? $account->cash_account_type_id);
+        $financiallyUsed = DB::table('cash_movements')->where('cash_account_id', $account->id)->exists()
+            || DB::table('opening_balances')->where('cash_account_id', $account->id)->where('status', 'posted')->exists();
+        $requestedTitle = $input['account_title_id'] ?? $account->account_title_id;
+        $requestedCurrency = $input['currency_id'] ?? $account->currency_id;
+        if ($financiallyUsed && ($requestedTitle !== $account->account_title_id || $requestedCurrency !== $account->currency_id)) {
+            throw new RegistryConflictException('The Account Title and Currency cannot be changed after a Cash Account has financial history.', ['dependency' => 'financial_usage', 'account_id' => $account->id]);
+        }
         $this->validateReferences([...$account->only(['account_title_id', 'currency_id', 'branch_id']), ...$input], $company, $type);
         $institution = array_key_exists('institution', $input) ? $this->institution($input['institution'], $company, $request) : $account->institution;
         $identifier = array_key_exists('account_identifier', $input) ? $input['account_identifier'] : $account->account_identifier_encrypted;
@@ -100,9 +108,185 @@ final class CashAccountService
         return $account->load(['type', 'accountTitle', 'currency', 'branch', 'institution', 'capabilities', 'custodians']);
     }
 
+    public function closureBlockers(CashAccount $account, Company $company): array
+    {
+        $this->scope($account, $company);
+        $account->loadMissing('currency');
+        $blockers = [];
+        $postedBalance = DB::table('cash_movements')->where('cash_account_id', $account->id)->where('movement_status', 'posted')->selectRaw("COALESCE(SUM(CASE WHEN direction = 'increase' THEN amount ELSE -amount END), 0) as total")->value('total');
+        if (abs((float) $postedBalance) > 0.000001) {
+            $blockers[] = ['code' => 'nonzero_balance', 'message' => 'The posted Cash Account balance must be zero before closure.', 'amount' => (string) $postedBalance, 'currency' => $account->currency?->code];
+        }
+        $this->addCountBlocker($blockers, 'pending_movements', 'cash_movement_documents', $account->id, ['draft', 'submitted', 'under_review', 'approved'], 'Unresolved Cash Movement documents must be completed or cancelled before closure.');
+        $this->addCountBlocker($blockers, 'pending_transfers', 'cash_transfer_documents', $account->id, ['draft', 'submitted', 'under_review', 'approved'], 'Unresolved Cash Transfer documents must be completed or cancelled before closure.', ['source_cash_account_id', 'destination_cash_account_id']);
+        $this->addCountBlocker($blockers, 'pending_counts', 'cash_counts', $account->id, ['scheduled', 'in_progress', 'submitted', 'under_review', 'variance_review'], 'Open Cash Counts must be closed or resolved before closure.');
+        $this->addCountBlocker($blockers, 'pending_reconciliations', 'reconciliations', $account->id, ['draft', 'prepared', 'submitted', 'under_review', 'approved', 'returned', 'reopened'], 'Open reconciliations must be completed or cancelled before closure.');
+        $this->addCountBlocker($blockers, 'open_statement_imports', 'statement_import_batches', $account->id, ['uploaded', 'validation_failed', 'ready'], 'Statement imports must be cancelled or reconciled before closure.');
+        $pendingChecks = DB::table('payment_instruments as instrument')
+            ->join('payment_instructions as payment', 'payment.id', '=', 'instrument.payment_instruction_id')
+            ->where('instrument.cash_account_id', $account->id)
+            ->where('instrument.instrument_type', 'check')
+            ->whereIn('instrument.status', ['reserved', 'printed', 'signed', 'released'])
+            ->whereIn('payment.status', ['draft', 'pending_approval', 'approved', 'scheduled', 'ready', 'released', 'pending_confirmation'])
+            ->count();
+        if ($pendingChecks > 0) {
+            $blockers[] = ['code' => 'pending_checks', 'count' => $pendingChecks, 'message' => 'Pending checks must be released, voided, stopped, or otherwise resolved before closure.'];
+        }
+        $openOutstanding = DB::table('reconciliation_outstanding_items')->where('status', 'open')->where(function ($query) use ($account) {
+            $query->whereIn('reconciliation_id', DB::table('reconciliations')->where('cash_account_id', $account->id)->select('id'));
+        })->count();
+        if ($openOutstanding > 0) {
+            $blockers[] = ['code' => 'open_outstanding_items', 'count' => $openOutstanding, 'message' => 'Open reconciliation outstanding items must be resolved before closure.'];
+        }
+        if ($this->currentCustodian($account)) {
+            $blockers[] = ['code' => 'active_custodian', 'message' => 'The active primary custodian assignment must be ended before closure.'];
+        }
+
+        return $blockers;
+    }
+
+    public function requestClosure(CashAccount $account, array $input, Company $company, Request $request): CashAccount
+    {
+        $this->scope($account, $company);
+        $this->checkVersion($account, $input);
+        if (! in_array($account->status, ['active', 'restricted', 'inactive'], true) || ! in_array($account->closure_status ?? 'none', ['none', 'cancelled'], true)) {
+            throw new RegistryConflictException('This Cash Account cannot enter the closure workflow from its current status.');
+        }
+        $blockers = $this->closureBlockers($account, $company);
+        if ($blockers !== []) {
+            throw new RegistryConflictException('Cash Account closure is blocked until all account blockers are resolved.', ['blockers' => $blockers]);
+        }
+        $before = $this->safe($account);
+        $account->update(['status' => 'pending_closure', 'status_reason' => $input['reason'], 'status_changed_at' => now(), 'status_changed_by' => $request->user()?->id, 'closure_status' => 'requested', 'closure_original_status' => $account->status, 'closure_reason' => $input['reason'], 'closure_effective_date' => $input['effective_date'] ?? now()->toDateString(), 'closure_blockers' => [], 'closure_requested_by' => $request->user()?->id, 'closure_requested_at' => now(), 'version' => $account->version + 1, 'updated_by' => $request->user()?->id]);
+        $this->audit($request, 'EVT-CAS-023', $account, 'Cash Account closure requested', 'A Cash Account closure request was created.', $input['reason'], $before, $this->safe($account));
+        CashAccountLifecycleEvent::dispatch('EVT-CAS-023', $company->id, $account->id, $account->status, $account->closure_status);
+
+        return $account->fresh(['type', 'accountTitle', 'currency', 'branch', 'institution', 'capabilities', 'custodians']);
+    }
+
+    public function reviewClosure(CashAccount $account, array $input, Company $company, Request $request): CashAccount
+    {
+        $this->scope($account, $company);
+        $this->checkVersion($account, $input);
+        if ($account->status !== 'pending_closure' || $account->closure_status !== 'requested') {
+            throw new RegistryConflictException('Only a requested Cash Account closure may enter review.');
+        }
+        $account->update(['closure_status' => 'under_review', 'closure_reviewed_by' => $request->user()?->id, 'closure_reviewed_at' => now(), 'version' => $account->version + 1, 'updated_by' => $request->user()?->id]);
+        $this->audit($request, 'cash-account.closure.reviewed', $account, 'Cash Account closure under review', 'The Cash Account closure request entered review.', $input['reason'] ?? null);
+
+        return $account->fresh(['type', 'accountTitle', 'currency', 'branch', 'institution', 'capabilities', 'custodians']);
+    }
+
+    public function approveClosure(CashAccount $account, array $input, Company $company, Request $request): CashAccount
+    {
+        $this->scope($account, $company);
+        $this->checkVersion($account, $input);
+        if ($account->status !== 'pending_closure' || $account->closure_status !== 'balance_resolution') {
+            throw new RegistryConflictException('Only a Cash Account closure with completed balance resolution may be approved.');
+        }
+        if (! $account->attachments()->exists()) {
+            throw new RegistryConflictException('Archive evidence is required before a Cash Account closure can be approved.', ['dependency' => 'archive_evidence']);
+        }
+        if ($account->closure_requested_by && (int) $account->closure_requested_by === (int) $request->user()?->id) {
+            throw new RegistryConflictException('The user who requested closure cannot approve the same closure.', ['segregation' => true]);
+        }
+        $account->update(['closure_status' => 'approved', 'closure_approved_by' => $request->user()?->id, 'closure_approved_at' => now(), 'version' => $account->version + 1, 'updated_by' => $request->user()?->id]);
+        $this->audit($request, 'cash-account.closure.approved', $account, 'Cash Account closure approved', 'The Cash Account closure request was approved.', $input['reason'] ?? null);
+
+        return $account->fresh(['type', 'accountTitle', 'currency', 'branch', 'institution', 'capabilities', 'custodians']);
+    }
+
+    public function resolveClosure(CashAccount $account, array $input, Company $company, Request $request): CashAccount
+    {
+        $this->scope($account, $company);
+        $this->checkVersion($account, $input);
+        if ($account->status !== 'pending_closure' || $account->closure_status !== 'under_review') {
+            throw new RegistryConflictException('Only a Cash Account closure under review may enter balance resolution.');
+        }
+        $blockers = $this->closureBlockers($account, $company);
+        if ($blockers !== []) {
+            throw new RegistryConflictException('Balance resolution is incomplete for this Cash Account.', ['blockers' => $blockers]);
+        }
+        $account->update(['closure_status' => 'balance_resolution', 'closure_blockers' => [], 'version' => $account->version + 1, 'updated_by' => $request->user()?->id]);
+        $this->audit($request, 'cash-account.closure.balance-resolved', $account, 'Cash Account balance resolution completed', 'Cash Account closure blockers were re-evaluated and resolved.', $input['reason'] ?? null);
+
+        return $account->fresh(['type', 'accountTitle', 'currency', 'branch', 'institution', 'capabilities', 'custodians']);
+    }
+
+    public function close(CashAccount $account, array $input, Company $company, Request $request): CashAccount
+    {
+        $this->scope($account, $company);
+        $this->checkVersion($account, $input);
+        if ($account->status !== 'pending_closure' || $account->closure_status !== 'approved') {
+            throw new RegistryConflictException('Only an approved Cash Account closure may be closed.');
+        }
+        $blockers = $this->closureBlockers($account, $company);
+        if ($blockers !== []) {
+            throw new RegistryConflictException('Cash Account closure is blocked because the account changed after approval.', ['blockers' => $blockers, 'stale_approval' => true]);
+        }
+        if ($account->closure_approved_by && (int) $account->closure_approved_by === (int) $request->user()?->id) {
+            throw new RegistryConflictException('The user who approved closure cannot execute the same closure.', ['segregation' => true]);
+        }
+        $before = $this->safe($account);
+        $account->update(['status' => 'closed', 'closure_status' => 'closed', 'status_reason' => $input['reason'] ?? $account->closure_reason, 'status_changed_at' => now(), 'status_changed_by' => $request->user()?->id, 'closed_by' => $request->user()?->id, 'closed_at' => now(), 'version' => $account->version + 1, 'updated_by' => $request->user()?->id]);
+        $this->audit($request, 'EVT-CAS-024', $account, 'Cash Account closed', 'The Cash Account was closed after governed approval and blocker re-evaluation.', $input['reason'] ?? $account->closure_reason, $before, $this->safe($account));
+        CashAccountLifecycleEvent::dispatch('EVT-CAS-024', $company->id, $account->id, $account->status, $account->closure_status);
+
+        return $account->fresh(['type', 'accountTitle', 'currency', 'branch', 'institution', 'capabilities', 'custodians']);
+    }
+
+    public function cancelClosure(CashAccount $account, array $input, Company $company, Request $request): CashAccount
+    {
+        $this->scope($account, $company);
+        $this->checkVersion($account, $input);
+        if ($account->status !== 'pending_closure' || ! in_array($account->closure_status, ['requested', 'under_review', 'balance_resolution', 'approved'], true)) {
+            throw new RegistryConflictException('This Cash Account closure cannot be cancelled from its current status.');
+        }
+        $reason = trim((string) ($input['reason'] ?? ''));
+        if ($reason === '') {
+            throw new RegistryConflictException('A reason is required to cancel a Cash Account closure.');
+        }
+        $original = $account->closure_original_status ?: 'inactive';
+        $account->update(['status' => $original, 'status_reason' => $reason, 'status_changed_at' => now(), 'status_changed_by' => $request->user()?->id, 'closure_status' => 'cancelled', 'closure_cancelled_by' => $request->user()?->id, 'closure_cancelled_at' => now(), 'version' => $account->version + 1, 'updated_by' => $request->user()?->id]);
+        $this->audit($request, 'cash-account.closure.cancelled', $account, 'Cash Account closure cancelled', 'The Cash Account closure was cancelled and the prior lifecycle status was restored.', $reason);
+
+        return $account->fresh(['type', 'accountTitle', 'currency', 'branch', 'institution', 'capabilities', 'custodians']);
+    }
+
+    private function checkVersion(CashAccount $account, array $input): void
+    {
+        if ((int) ($input['version'] ?? 0) !== (int) $account->version) {
+            throw new RegistryConflictException('This Cash Account was changed by another user. Refresh and try again.', ['version_conflict' => true]);
+        }
+    }
+
+    private function addCountBlocker(array &$blockers, string $code, string $table, string $accountId, array $statuses, string $message, ?array $accountColumns = null, ?array $excludeStatuses = null): void
+    {
+        $query = DB::table($table)->whereIn('status', $statuses);
+        if ($table === 'cash_transfer_documents') {
+            $query->where(function ($builder) use ($accountId, $accountColumns) {
+                foreach ($accountColumns ?? [] as $column) {
+                    $builder->orWhere($column, $accountId);
+                }
+            });
+        } else {
+            $query->where('cash_account_id', $accountId);
+        }
+        if ($excludeStatuses) {
+            $query->whereNotIn('status', $excludeStatuses);
+        }
+        $count = $query->count();
+        if ($count > 0) {
+            $blockers[] = ['code' => $code, 'count' => $count, 'message' => $message];
+        }
+    }
+
     public function updateCapabilities(CashAccount $account, array $input, Company $company, Request $request): CashAccount
     {
         $this->scope($account, $company);
+        if (in_array($account->status, ['pending_closure', 'closed'], true)) {
+            throw new RegistryConflictException('Cash Account capabilities cannot be changed while closure is pending or after the account is closed.');
+        }
         if ((int) ($input['version'] ?? 0) !== (int) $account->version) {
             throw new RegistryConflictException('This Cash Account was changed by another user. Refresh and try again.', ['version_conflict' => true]);
         }
@@ -163,6 +347,9 @@ final class CashAccountService
     public function assignCustodian(CashAccount $account, array $input, Company $company, Request $request): CashAccountCustodian
     {
         $this->scope($account, $company);
+        if (in_array($account->status, ['pending_closure', 'closed'], true)) {
+            throw new RegistryConflictException('Custodian assignments cannot be added while closure is pending or after the account is closed.');
+        }
         $user = User::whereKey($input['user_id'] ?? 0)->where('status', 'active')->first();
         if (! $user || ! $user->companies()->whereKey($company->id)->wherePivot('status', 'active')->exists()) {
             throw new RegistryConflictException('The custodian must be an active user in the current company.');
@@ -233,7 +420,7 @@ final class CashAccountService
 
     public function safe(CashAccount $account): array
     {
-        return ['id' => $account->id, 'code' => $account->code, 'name' => $account->name, 'status' => $account->status, 'version' => $account->version, 'masked_account_identifier' => $account->masked_account_identifier];
+        return ['id' => $account->id, 'code' => $account->code, 'name' => $account->name, 'status' => $account->status, 'version' => $account->version, 'closure_status' => $account->closure_status ?? 'none', 'masked_account_identifier' => $account->masked_account_identifier];
     }
 
     private function validateReferences(array $input, Company $company, CashAccountType $type): void

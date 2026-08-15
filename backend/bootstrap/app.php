@@ -13,6 +13,8 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Middleware\HandleCors;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -45,6 +47,24 @@ return Application::configure(basePath: dirname(__DIR__))
         $exceptions->render(function (RegistryConflictException $exception, Request $request) {
             if ($request->is('api/*')) {
                 return ApiResponse::error($exception->getMessage(), 409, $exception->errors);
+            }
+        });
+        $exceptions->render(function (ValidationException $exception, Request $request) {
+            if ($request->is('api/*')) {
+                return ApiResponse::error('The given data was invalid.', 422, $exception->errors());
+            }
+        });
+        $exceptions->render(function (Throwable $exception, Request $request) {
+            if ($request->is('api/*')) {
+                if ($exception instanceof HttpExceptionInterface) {
+                    $status = $exception->getStatusCode();
+
+                    return ApiResponse::error($status === 404 ? 'The requested resource was not found.' : 'The request could not be completed.', $status);
+                }
+
+                report($exception);
+
+                return ApiResponse::error('An unexpected error occurred. Check the correlation ID and try again.', 500);
             }
         });
     })->create();

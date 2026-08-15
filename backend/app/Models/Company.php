@@ -37,6 +37,16 @@ class Company extends Model
         'default_expense_account_title_id',
         'opening_balance_offset_account_title_id',
         'opening_balance_lock_date',
+        'branding',
+        'tax_registration_references',
+        'date_format',
+        'number_format',
+        'paper_size',
+        'document_preferences',
+        'module_preferences',
+        'notification_defaults',
+        'settings_version',
+        'settings_updated_at',
     ];
 
     protected function casts(): array
@@ -50,6 +60,13 @@ class Company extends Model
             'principal_address' => 'array',
             'fiscal_year_start_month' => 'integer',
             'setup_completed_at' => 'datetime',
+            'branding' => 'array',
+            'tax_registration_references' => 'array',
+            'document_preferences' => 'array',
+            'module_preferences' => 'array',
+            'notification_defaults' => 'array',
+            'settings_updated_at' => 'datetime',
+            'settings_version' => 'integer',
         ];
     }
 

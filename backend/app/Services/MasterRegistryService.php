@@ -15,6 +15,7 @@ use App\Models\RegistryHistory;
 use App\Models\UnitOfMeasure;
 use App\Support\AuditService;
 use App\Support\RegistryNormalizer;
+use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -47,13 +48,13 @@ final class MasterRegistryService
                 'correlation_id' => $request->attributes->get('correlation_id'),
             ]);
             $this->syncPartnerRoles($record, $company, $input['roles'] ?? [], $request);
-            $this->syncExternalIdentifiers($record, 'business_partner', $company, $input['external_identifiers'] ?? []);
+            $this->syncExternalIdentifiers($record, 'business_partner', $company, $request, $input['external_identifiers'] ?? []);
             $this->record($request, 'business_partner.created', $record, $company, [], $record->toArray(), null, 'Business partner created', 'A business partner was added to the master registry.');
             if ($potential) {
                 $this->record($request, 'business_partner.duplicate_override', $record, $company, [], ['duplicates' => $potential], $input['duplicate_override_reason'] ?? 'Duplicate warning acknowledged.', 'Duplicate warning overridden', 'A potential duplicate warning was explicitly overridden.');
             }
 
-            return $record->load(['roles', 'contacts', 'addresses']);
+            return $record->load(['roles', 'contacts', 'addresses', 'externalIdentifiers']);
         });
     }
 
@@ -84,11 +85,11 @@ final class MasterRegistryService
             $this->syncPartnerRoles($record, $company, $input['roles'], $request);
         }
         if (array_key_exists('external_identifiers', $input)) {
-            $this->syncExternalIdentifiers($record, 'business_partner', $company, $input['external_identifiers']);
+            $this->syncExternalIdentifiers($record, 'business_partner', $company, $request, $input['external_identifiers']);
         }
         $this->record($request, 'business_partner.updated', $record, $company, $before, $record->toArray(), null, 'Business partner updated', 'Master registry identity details were updated.');
 
-        return $record->load(['roles', 'contacts', 'addresses']);
+        return $record->load(['roles', 'contacts', 'addresses', 'externalIdentifiers']);
     }
 
     public function createProduct(array $input, Company $company, Request $request): ProductService
@@ -121,13 +122,13 @@ final class MasterRegistryService
                 'effective_to' => $input['effective_to'] ?? null, 'created_by' => $request->user()?->id, 'updated_by' => $request->user()?->id,
                 'source_channel' => $input['source_channel'] ?? 'api', 'correlation_id' => $request->attributes->get('correlation_id'),
             ]);
-            $this->syncExternalIdentifiers($record, 'product_service', $company, $input['external_identifiers'] ?? []);
+            $this->syncExternalIdentifiers($record, 'product_service', $company, $request, $input['external_identifiers'] ?? []);
             $this->record($request, 'product_service.created', $record, $company, [], $record->toArray(), null, 'Product or service created', 'A product or service was added to the master registry.');
             if ($potential) {
                 $this->record($request, 'product_service.duplicate_override', $record, $company, [], ['duplicates' => $potential], $input['duplicate_override_reason'] ?? 'Duplicate warning acknowledged.', 'Duplicate warning overridden', 'A potential duplicate warning was explicitly overridden.');
             }
 
-            return $record->load(['category', 'baseUnit']);
+            return $record->load(['category', 'baseUnit', 'externalIdentifiers']);
         });
     }
 
@@ -155,11 +156,11 @@ final class MasterRegistryService
         }
         $record->refresh();
         if (array_key_exists('external_identifiers', $input)) {
-            $this->syncExternalIdentifiers($record, 'product_service', $company, $input['external_identifiers']);
+            $this->syncExternalIdentifiers($record, 'product_service', $company, $request, $input['external_identifiers']);
         }
         $this->record($request, 'product_service.updated', $record, $company, $before, $record->toArray(), null, 'Product or service updated', 'Master registry item details were updated.');
 
-        return $record->load(['category', 'baseUnit']);
+        return $record->load(['category', 'baseUnit', 'externalIdentifiers']);
     }
 
     public function createCategory(array $input, Company $company, Request $request): RegistryCategory
@@ -276,6 +277,7 @@ final class MasterRegistryService
         }
         $contact = BusinessPartnerContact::create(['id' => (string) Str::uuid(), 'business_partner_id' => $partner->id, 'company_id' => $company->id, 'contact_type' => $input['contact_type'] ?? 'general', 'contact_name' => trim($input['contact_name']), 'position' => $input['position'] ?? null, 'email' => isset($input['email']) ? strtolower(trim($input['email'])) : null, 'phone' => $input['phone'] ?? null, 'mobile' => $input['mobile'] ?? null, 'is_primary' => $input['is_primary'] ?? false, 'status' => 'active', 'effective_from' => $input['effective_from'] ?? now()->toDateString(), 'effective_to' => $input['effective_to'] ?? null, 'created_by' => $request->user()?->id, 'updated_by' => $request->user()?->id]);
         $this->record($request, 'business_partner.contact.changed', $partner, $company, [], ['contact_id' => $contact->id, 'contact_name' => $contact->contact_name], null, 'Contact added', 'A business partner contact was added.');
+        $this->record($request, 'business_partner_contact.created', $contact, $company, [], $contact->toArray(), null, 'Contact created', 'A business partner contact was created.');
 
         return $contact;
     }
@@ -290,8 +292,123 @@ final class MasterRegistryService
         }
         $address = BusinessPartnerAddress::create(['id' => (string) Str::uuid(), 'business_partner_id' => $partner->id, 'company_id' => $company->id, 'address_type' => $input['address_type'] ?? 'general', 'line1' => trim($input['line1']), 'line2' => $input['line2'] ?? null, 'city' => $input['city'] ?? null, 'region' => $input['region'] ?? null, 'postal_code' => $input['postal_code'] ?? null, 'country' => strtoupper($input['country'] ?? 'PH'), 'is_primary_billing' => $input['is_primary_billing'] ?? false, 'is_primary_shipping' => $input['is_primary_shipping'] ?? false, 'status' => 'active', 'effective_from' => $input['effective_from'] ?? now()->toDateString(), 'effective_to' => $input['effective_to'] ?? null, 'created_by' => $request->user()?->id, 'updated_by' => $request->user()?->id]);
         $this->record($request, 'business_partner.address.changed', $partner, $company, [], ['address_id' => $address->id, 'address_type' => $address->address_type], null, 'Address added', 'A business partner address was added.');
+        $this->record($request, 'business_partner_address.created', $address, $company, [], $address->toArray(), null, 'Address created', 'A business partner address was created.');
 
         return $address;
+    }
+
+    public function updateContact(BusinessPartnerContact $record, array $input, Company $company, Request $request): BusinessPartnerContact
+    {
+        $this->assertVersion($record, $input['version'] ?? null, 'contact');
+        $before = $record->toArray();
+        $updates = array_intersect_key($input, array_flip(['contact_type', 'contact_name', 'position', 'email', 'phone', 'mobile', 'is_primary', 'effective_from', 'effective_to']));
+        if (isset($updates['email'])) {
+            $updates['email'] = strtolower(trim($updates['email']));
+        }
+        if (($updates['is_primary'] ?? false)) {
+            BusinessPartnerContact::where('company_id', $company->id)->where('business_partner_id', $record->business_partner_id)->where('contact_type', $updates['contact_type'] ?? $record->contact_type)->where('is_primary', true)->where('id', '!=', $record->id)->update(['is_primary' => false, 'updated_at' => now()]);
+        }
+        $updates['updated_by'] = $request->user()?->id;
+        $updates['version'] = $record->version + 1;
+        if (BusinessPartnerContact::where('company_id', $company->id)->whereKey($record->id)->where('version', $record->version)->update($updates) !== 1) {
+            throw new RegistryConflictException('This contact was changed by another user. Refresh and try again.', ['version_conflict' => true]);
+        }
+        $record->refresh();
+        $this->record($request, 'business_partner_contact.updated', $record, $company, $before, $record->toArray(), null, 'Contact updated', 'A business partner contact was updated.');
+
+        return $record;
+    }
+
+    public function updateAddress(BusinessPartnerAddress $record, array $input, Company $company, Request $request): BusinessPartnerAddress
+    {
+        $this->assertVersion($record, $input['version'] ?? null, 'address');
+        $before = $record->toArray();
+        $updates = array_intersect_key($input, array_flip(['address_type', 'line1', 'line2', 'city', 'region', 'postal_code', 'country', 'is_primary_billing', 'is_primary_shipping', 'effective_from', 'effective_to']));
+        if (isset($updates['country'])) {
+            $updates['country'] = strtoupper($updates['country']);
+        }
+        if (($updates['is_primary_billing'] ?? false)) {
+            BusinessPartnerAddress::where('company_id', $company->id)->where('business_partner_id', $record->business_partner_id)->where('is_primary_billing', true)->where('id', '!=', $record->id)->update(['is_primary_billing' => false, 'updated_at' => now()]);
+        }
+        if (($updates['is_primary_shipping'] ?? false)) {
+            BusinessPartnerAddress::where('company_id', $company->id)->where('business_partner_id', $record->business_partner_id)->where('is_primary_shipping', true)->where('id', '!=', $record->id)->update(['is_primary_shipping' => false, 'updated_at' => now()]);
+        }
+        $updates['updated_by'] = $request->user()?->id;
+        $updates['version'] = $record->version + 1;
+        if (BusinessPartnerAddress::where('company_id', $company->id)->whereKey($record->id)->where('version', $record->version)->update($updates) !== 1) {
+            throw new RegistryConflictException('This address was changed by another user. Refresh and try again.', ['version_conflict' => true]);
+        }
+        $record->refresh();
+        $this->record($request, 'business_partner_address.updated', $record, $company, $before, $record->toArray(), null, 'Address updated', 'A business partner address was updated.');
+
+        return $record;
+    }
+
+    public function transitionContact(BusinessPartnerContact $record, string $status, string $reason, Company $company, Request $request): BusinessPartnerContact
+    {
+        return $this->transitionChild($record, 'business_partner_contact', $status, $reason, $company, $request);
+    }
+
+    public function transitionAddress(BusinessPartnerAddress $record, string $status, string $reason, Company $company, Request $request): BusinessPartnerAddress
+    {
+        return $this->transitionChild($record, 'business_partner_address', $status, $reason, $company, $request);
+    }
+
+    public function createExternalIdentifier(Model $parent, string $registryType, array $input, Company $company, Request $request): RegistryExternalIdentifier
+    {
+        $type = $this->identifierType($input['identifier_type'] ?? '');
+        $value = trim((string) ($input['value'] ?? ''));
+        if ($type === '' || $value === '') {
+            throw new RegistryConflictException('Identifier type and value are required.');
+        }
+        $normalized = RegistryNormalizer::text($value);
+        if (RegistryExternalIdentifier::where('company_id', $company->id)->where('registry_type', $registryType)->where('identifier_type', $type)->where('normalized_value', $normalized)->exists()) {
+            throw new RegistryConflictException('This registry identifier is already assigned in the company.');
+        }
+        $identifier = RegistryExternalIdentifier::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'registry_type' => $registryType, 'record_id' => $parent->getKey(), 'identifier_type' => $type, 'value' => $value, 'normalized_value' => $normalized, 'source_system' => $input['source_system'] ?? null, 'status' => 'active', 'effective_from' => $input['effective_from'] ?? now()->toDateString(), 'effective_to' => $input['effective_to'] ?? null, 'version' => 1, 'created_by' => $request->user()?->id, 'updated_by' => $request->user()?->id]);
+        $this->record($request, $registryType.'_identifier.created', $identifier, $company, [], $this->maskedIdentifierState($identifier), null, 'Identifier created', 'A registry identifier was added.');
+
+        return $identifier;
+    }
+
+    public function updateExternalIdentifier(RegistryExternalIdentifier $record, array $input, Company $company, Request $request): RegistryExternalIdentifier
+    {
+        $this->assertVersion($record, $input['version'] ?? null, 'identifier');
+        $before = $this->maskedIdentifierState($record);
+        $updates = array_intersect_key($input, array_flip(['identifier_type', 'value', 'source_system', 'effective_from', 'effective_to']));
+        if (isset($updates['identifier_type'])) {
+            $updates['identifier_type'] = $this->identifierType($updates['identifier_type']);
+        }
+        if (isset($updates['value'])) {
+            $updates['value'] = trim($updates['value']);
+            $updates['normalized_value'] = RegistryNormalizer::text($updates['value']);
+        }
+        $type = $updates['identifier_type'] ?? $record->identifier_type;
+        $normalized = $updates['normalized_value'] ?? $record->normalized_value;
+        if (RegistryExternalIdentifier::where('company_id', $company->id)->where('registry_type', $record->registry_type)->where('identifier_type', $type)->where('normalized_value', $normalized)->where('id', '!=', $record->id)->exists()) {
+            throw new RegistryConflictException('This registry identifier is already assigned in the company.');
+        }
+        $updates['updated_by'] = $request->user()?->id;
+        $updates['version'] = $record->version + 1;
+        if (RegistryExternalIdentifier::where('company_id', $company->id)->whereKey($record->id)->where('version', $record->version)->update($updates) !== 1) {
+            throw new RegistryConflictException('This identifier was changed by another user. Refresh and try again.', ['version_conflict' => true]);
+        }
+        $record->refresh();
+        $this->record($request, $record->registry_type.'_identifier.updated', $record, $company, $before, $this->maskedIdentifierState($record), null, 'Identifier updated', 'A registry identifier was updated.');
+
+        return $record;
+    }
+
+    public function transitionExternalIdentifier(RegistryExternalIdentifier $record, string $status, string $reason, Company $company, Request $request): RegistryExternalIdentifier
+    {
+        return $this->transitionChild($record, $record->registry_type.'_identifier', $status, $reason, $company, $request);
+    }
+
+    public function historyExternalIdentifier(string $id, Company $company, string $registryType): LengthAwarePaginator
+    {
+        RegistryExternalIdentifier::where('company_id', $company->id)->where('registry_type', $registryType)->whereKey($id)->firstOrFail();
+
+        return RegistryHistory::where('company_id', $company->id)->where('registry_type', $registryType.'_identifier')->where('record_id', $id)->latest('created_at')->paginate(25);
     }
 
     public function history(string $type, string $id, Company $company)
@@ -377,13 +494,59 @@ final class MasterRegistryService
         }
     }
 
-    private function syncExternalIdentifiers(Model $record, string $type, Company $company, array $identifiers): void
+    private function syncExternalIdentifiers(Model $record, string $type, Company $company, Request $request, array $identifiers): void
     {
         foreach ($identifiers as $identifier) {
             if (empty($identifier['value']) || empty($identifier['identifier_type'])) {
                 continue;
-            } RegistryExternalIdentifier::updateOrCreate(['company_id' => $company->id, 'registry_type' => $type, 'identifier_type' => RegistryNormalizer::code($identifier['identifier_type']), 'normalized_value' => RegistryNormalizer::text($identifier['value'])], ['id' => (string) Str::uuid(), 'record_id' => $record->id, 'value' => trim($identifier['value']), 'source_system' => $identifier['source_system'] ?? null, 'status' => 'active']);
+            }
+            $exists = RegistryExternalIdentifier::where('company_id', $company->id)->where('registry_type', $type)->where('record_id', $record->id)->where('identifier_type', $this->identifierType($identifier['identifier_type']))->where('normalized_value', RegistryNormalizer::text($identifier['value']))->exists();
+            if (! $exists) {
+                $this->createExternalIdentifier($record, $type, $identifier, $company, $request);
+            }
         }
+    }
+
+    private function assertVersion(Model $record, mixed $version, string $label): void
+    {
+        if ((int) $version !== (int) $record->version) {
+            throw new RegistryConflictException("This {$label} was changed by another user. Refresh and try again.", ['version_conflict' => true]);
+        }
+    }
+
+    private function identifierType(string $type): string
+    {
+        $normalized = strtolower(trim($type));
+        $normalized = preg_replace('/[^a-z0-9_]+/i', '_', $normalized);
+
+        return trim($normalized, '_');
+    }
+
+    private function transitionChild(Model $record, string $type, string $status, string $reason, Company $company, Request $request): Model
+    {
+        if ($reason === '') {
+            throw new RegistryConflictException('A reason is required for a status change.');
+        }
+        if (! in_array($status, ['active', 'inactive'], true)) {
+            throw new RegistryConflictException('Only active and inactive lifecycle states are supported for registry child records.');
+        }
+        $before = $record instanceof RegistryExternalIdentifier ? $this->maskedIdentifierState($record) : $record->toArray();
+        $updated = $record::where('company_id', $company->id)->whereKey($record->id)->where('version', $record->version)->update(['status' => $status, 'version' => $record->version + 1, 'updated_by' => $request->user()?->id, 'status_changed_at' => now(), 'status_changed_by' => $request->user()?->id, 'status_reason' => $reason]);
+        if ($updated !== 1) {
+            throw new RegistryConflictException('This registry child record was changed by another user. Refresh and try again.', ['version_conflict' => true]);
+        }
+        $record->refresh();
+        $after = $record instanceof RegistryExternalIdentifier ? $this->maskedIdentifierState($record) : $record->toArray();
+        $this->record($request, $type.'.'.($status === 'active' ? 'reactivated' : 'deactivated'), $record, $company, $before, $after, $reason, ucfirst(str_replace('_', ' ', $type)).' '.($status === 'active' ? 'reactivated' : 'deactivated'), 'A master registry child record changed lifecycle status.');
+
+        return $record;
+    }
+
+    private function maskedIdentifierState(RegistryExternalIdentifier $identifier): array
+    {
+        $value = (string) $identifier->value;
+
+        return [...$identifier->toArray(), 'value' => mb_strlen($value) > 4 ? str_repeat('•', min(8, max(4, mb_strlen($value) - 4))).mb_substr($value, -4) : '••••', 'normalized_value' => '[masked]'];
     }
 
     private function record(Request $request, string $action, Model $record, Company $company, array $before, array $after, ?string $reason, ?string $title, ?string $description): void
@@ -395,7 +558,7 @@ final class MasterRegistryService
     private function typeFor(Model $record): string
     {
         return match (true) {
-            $record instanceof BusinessPartner => 'business_partner', $record instanceof ProductService => 'product_service', $record instanceof RegistryCategory => 'category', $record instanceof UnitOfMeasure => 'unit', default => 'registry'
+            $record instanceof BusinessPartner => 'business_partner', $record instanceof ProductService => 'product_service', $record instanceof BusinessPartnerContact => 'business_partner_contact', $record instanceof BusinessPartnerAddress => 'business_partner_address', $record instanceof RegistryExternalIdentifier => $record->registry_type.'_identifier', $record instanceof RegistryCategory => 'category', $record instanceof UnitOfMeasure => 'unit', default => 'registry'
         };
     }
 }

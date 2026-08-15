@@ -63,7 +63,7 @@ class SalesPhase4ATest extends TestCase
         $client->postJson('/api/v1/sales/'.$saleId.'/post')->assertOk();
         $openItemCount = (int) $this->app->make('db')->table('receivable_open_items')->count();
         $statement = $client->postJson('/api/v1/billing-statements', ['customer_id' => $customer->id, 'statement_date' => '2026-08-04', 'period_from' => '2026-08-01', 'period_to' => '2026-08-04']);
-        $statement->assertCreated()->assertJsonPath('data.status', 'generated')->assertJsonPath('data.ending_balance', '100.000000');
+        $statement->assertCreated()->assertJsonPath('data.status', 'generated')->assertJsonPath('data.ending_balance', '100.000000')->assertJsonPath('data.source_snapshot.open_item_snapshots.0.remaining_amount', '100.000000');
         $this->assertSame($openItemCount, (int) $this->app->make('db')->table('receivable_open_items')->count());
     }
 

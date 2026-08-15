@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\ActivityEvent;
+use App\Models\MembershipAccessHistory;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\UserInvitation;
@@ -94,9 +95,20 @@ class UserAccessController extends Controller
 
     public function changeStatus(Request $request, User $user, string $status)
     {
+        $input = $request->validate(['reason' => ['nullable', 'string', 'max:500']]);
         $company = $request->attributes->get('company');
 
-        return $this->idempotency->run($request, 'settings.users.membership.status', $company->id, fn () => $this->service->changeStatus($request, $company, $user, $status));
+        return $this->idempotency->run($request, 'settings.users.membership.status', $company->id, fn () => $this->service->changeStatus($request, $company, $user, $status, $input['reason'] ?? 'Administrative access status change'));
+    }
+
+    public function history(Request $request, User $user)
+    {
+        $company = $request->attributes->get('company');
+        if (! $user->companies()->whereKey($company->id)->exists()) {
+            return ApiResponse::error('The requested user is outside the active company scope.', 404);
+        }
+
+        return ApiResponse::success(MembershipAccessHistory::where('company_id', $company->id)->where('user_id', $user->id)->latest()->limit(100)->get());
     }
 
     public function activity(Request $request)

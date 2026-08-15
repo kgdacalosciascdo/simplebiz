@@ -3,10 +3,14 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\MasterRegistries\StoreExternalIdentifierRequest;
 use App\Http\Requests\MasterRegistries\StoreProductServiceRequest;
+use App\Http\Requests\MasterRegistries\UpdateExternalIdentifierRequest;
 use App\Http\Requests\MasterRegistries\UpdateProductServiceRequest;
 use App\Http\Resources\MasterRegistries\ProductServiceResource;
+use App\Http\Resources\MasterRegistries\RegistryExternalIdentifierResource;
 use App\Models\ProductService;
+use App\Models\RegistryExternalIdentifier;
 use App\Services\MasterRegistryService;
 use App\Support\ApiResponse;
 use App\Support\CompanyContext;
@@ -28,7 +32,7 @@ class ProductServiceController extends Controller
 
     public function show(string $productService)
     {
-        $record = ProductService::where('company_id', $this->context->id())->with(['category', 'baseUnit'])->whereKey($productService)->firstOrFail();
+        $record = ProductService::where('company_id', $this->context->id())->with(['category', 'baseUnit', 'externalIdentifiers'])->whereKey($productService)->firstOrFail();
 
         return ApiResponse::success((new ProductServiceResource($record))->resolve());
     }
@@ -74,6 +78,43 @@ class ProductServiceController extends Controller
     {
         ProductService::where('company_id', $this->context->id())->whereKey($productService)->firstOrFail();
         $page = $this->service->history('product_service', $productService, $this->context->get());
+
+        return ApiResponse::success($page->items(), 200, ['pagination' => ['current_page' => $page->currentPage(), 'last_page' => $page->lastPage(), 'per_page' => $page->perPage(), 'total' => $page->total()]]);
+    }
+
+    public function identifiers(string $productService)
+    {
+        ProductService::where('company_id', $this->context->id())->whereKey($productService)->firstOrFail();
+
+        return ApiResponse::success(RegistryExternalIdentifierResource::collection(RegistryExternalIdentifier::where('company_id', $this->context->id())->where('registry_type', 'product_service')->where('record_id', $productService)->orderBy('identifier_type')->get())->resolve());
+    }
+
+    public function storeIdentifier(StoreExternalIdentifierRequest $request, string $productService)
+    {
+        $product = ProductService::where('company_id', $this->context->id())->whereKey($productService)->firstOrFail();
+
+        return $this->idempotency->run($request, 'master.product_service.identifier.create', $this->context->id(), fn () => ApiResponse::success((new RegistryExternalIdentifierResource($this->service->createExternalIdentifier($product, 'product_service', $request->validated(), $this->context->get(), $request)))->resolve(), 201));
+    }
+
+    public function updateIdentifier(UpdateExternalIdentifierRequest $request, string $productService, string $identifier)
+    {
+        $record = RegistryExternalIdentifier::where('company_id', $this->context->id())->where('registry_type', 'product_service')->where('record_id', $productService)->whereKey($identifier)->firstOrFail();
+
+        return ApiResponse::success((new RegistryExternalIdentifierResource($this->service->updateExternalIdentifier($record, $request->validated(), $this->context->get(), $request)))->resolve());
+    }
+
+    public function transitionIdentifier(Request $request, string $productService, string $identifier, string $status)
+    {
+        $input = $request->validate(['reason' => ['required', 'string', 'max:500']]);
+        $record = RegistryExternalIdentifier::where('company_id', $this->context->id())->where('registry_type', 'product_service')->where('record_id', $productService)->whereKey($identifier)->firstOrFail();
+
+        return ApiResponse::success((new RegistryExternalIdentifierResource($this->service->transitionExternalIdentifier($record, $status, $input['reason'], $this->context->get(), $request)))->resolve());
+    }
+
+    public function identifierHistory(string $productService, string $identifier)
+    {
+        ProductService::where('company_id', $this->context->id())->whereKey($productService)->firstOrFail();
+        $page = $this->service->historyExternalIdentifier($identifier, $this->context->get(), 'product_service');
 
         return ApiResponse::success($page->items(), 200, ['pagination' => ['current_page' => $page->currentPage(), 'last_page' => $page->lastPage(), 'per_page' => $page->perPage(), 'total' => $page->total()]]);
     }

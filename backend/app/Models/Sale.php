@@ -71,4 +71,19 @@ class Sale extends Model
     {
         return $this->hasMany(StockMovement::class, 'source_id')->where('source_type', self::class);
     }
+
+    public function salesReturns()
+    {
+        return $this->hasMany(SalesReturn::class);
+    }
+
+    public function salesAdjustments()
+    {
+        return $this->hasMany(SalesAdjustment::class);
+    }
+
+    public function receipts()
+    {
+        return $this->hasMany(Receipt::class, 'source_sale_id');
+    }
 }

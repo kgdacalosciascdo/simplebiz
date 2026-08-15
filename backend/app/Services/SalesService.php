@@ -15,6 +15,9 @@ use App\Models\ReceivableOpenItem;
 use App\Models\ReferenceCurrency;
 use App\Models\Sale;
 use App\Models\SaleLine;
+use App\Models\SalesAdjustment;
+use App\Models\SalesReturn;
+use App\Models\SalesReturnLine;
 use App\Models\SaleStatusHistory;
 use App\Models\TaxCode;
 use App\Support\AuditService;
@@ -50,8 +53,84 @@ final class SalesService
     {
         $sales = Sale::where('company_id', $company->id);
         $receivables = ReceivableOpenItem::where('company_id', $company->id);
+        $returns = SalesReturn::where('company_id', $company->id);
+        $adjustments = SalesAdjustment::where('company_id', $company->id);
 
-        return ['sales' => ['total' => (clone $sales)->count(), 'draft' => (clone $sales)->where('status', 'draft')->count(), 'awaiting_review' => (clone $sales)->where('status', 'for_approval')->count(), 'approved' => (clone $sales)->where('status', 'approved')->count(), 'posted' => (clone $sales)->where('status', 'posted')->count(), 'blocked' => (clone $sales)->where('status', 'failed')->count()], 'receivables' => ['open_items' => (clone $receivables)->where('remaining_amount', '>', 0)->count(), 'overdue' => (clone $receivables)->where('remaining_amount', '>', 0)->where('due_status', 'overdue')->count(), 'due_today' => (clone $receivables)->where('remaining_amount', '>', 0)->where('due_status', 'due_today')->count()], 'recent_activity' => SaleStatusHistory::where('company_id', $company->id)->latest()->limit(10)->get(['id', 'sale_id', 'from_status', 'to_status', 'reason', 'created_at'])];
+        return ['sales' => ['total' => (clone $sales)->count(), 'draft' => (clone $sales)->where('status', 'draft')->count(), 'awaiting_review' => (clone $sales)->where('status', 'for_approval')->count(), 'approved' => (clone $sales)->where('status', 'approved')->count(), 'posted' => (clone $sales)->where('status', 'posted')->count(), 'blocked' => (clone $sales)->where('status', 'failed')->count()], 'receivables' => ['open_items' => (clone $receivables)->where('remaining_amount', '>', 0)->count(), 'overdue' => (clone $receivables)->where('remaining_amount', '>', 0)->where('due_status', 'overdue')->count(), 'due_today' => (clone $receivables)->where('remaining_amount', '>', 0)->where('due_status', 'due_today')->count()], 'corrections' => ['returns_pending' => (clone $returns)->whereIn('status', ['draft', 'for_approval', 'approved'])->count(), 'returns_posted' => (clone $returns)->where('status', 'posted')->count(), 'adjustments_pending' => (clone $adjustments)->whereIn('status', ['draft', 'for_approval', 'approved'])->count(), 'adjustments_posted' => (clone $adjustments)->where('status', 'posted')->count()], 'recent_activity' => SaleStatusHistory::where('company_id', $company->id)->latest()->limit(10)->get(['id', 'sale_id', 'from_status', 'to_status', 'reason', 'created_at'])];
+    }
+
+    public function dashboard(Company $company, Request $request): array
+    {
+        $today = Carbon::today($company->timezone ?: config('app.timezone'));
+        $from = Carbon::parse($request->input('from', $today->copy()->startOfMonth()->toDateString()));
+        $to = Carbon::parse($request->input('to', $today->toDateString()));
+        $sales = Sale::where('company_id', $company->id)
+            ->whereIn('status', ['posted', 'reversed'])
+            ->whereDate('sale_date', '>=', $from->toDateString())
+            ->whereDate('sale_date', '<=', $to->toDateString())
+            ->with('currency')
+            ->get();
+        $returns = SalesReturn::where('company_id', $company->id)->where('status', 'posted')->whereDate('return_date', '>=', $from->toDateString())->whereDate('return_date', '<=', $to->toDateString())->with('currency')->get();
+        $adjustments = SalesAdjustment::where('company_id', $company->id)->where('status', 'posted')->whereDate('adjustment_date', '>=', $from->toDateString())->whereDate('adjustment_date', '<=', $to->toDateString())->with('currency')->get();
+        $receivables = ReceivableOpenItem::where('company_id', $company->id)->where('remaining_amount', '>', 0)->with('currency')->get();
+        $currencyIds = $sales->pluck('currency_id')->merge($receivables->pluck('currency_id'))->merge($returns->pluck('currency_id'))->merge($adjustments->pluck('currency_id'))->filter()->unique()->values();
+        $metrics = $currencyIds->map(function ($currencyId) use ($sales, $returns, $adjustments, $receivables, $from, $to) {
+            $saleRows = $sales->where('currency_id', $currencyId);
+            $returnRows = $returns->where('currency_id', $currencyId);
+            $adjustmentRows = $adjustments->where('currency_id', $currencyId);
+            $openRows = $receivables->where('currency_id', $currencyId);
+            $salesAmount = (string) $saleRows->sum('total');
+            $returnsAmount = (string) $returnRows->sum('total_amount');
+            $debitAdjustments = (string) $adjustmentRows->where('adjustment_type', 'debit')->sum('total_amount');
+            $creditAdjustments = (string) $adjustmentRows->where('adjustment_type', 'credit')->sum('total_amount');
+            $netSales = bcsub(bcadd($salesAmount, $debitAdjustments, 6), bcadd($returnsAmount, $creditAdjustments, 6), 6);
+            $openAmount = (string) $openRows->sum('remaining_amount');
+            $overdueAmount = (string) $openRows->where('due_status', 'overdue')->sum('remaining_amount');
+            $dueSoonAmount = (string) $openRows->filter(fn ($item) => $item->due_date && $item->due_date->between($from->copy()->max(Carbon::today()), Carbon::today()->addDays(7)))->sum('remaining_amount');
+            $currency = $saleRows->first()?->currency ?: $openRows->first()?->currency ?: $returnRows->first()?->currency ?: $adjustmentRows->first()?->currency;
+
+            return [
+                'currency_id' => $currencyId,
+                'currency' => $currency ? ['id' => $currency->id, 'code' => $currency->code, 'symbol' => $currency->symbol] : null,
+                'period' => ['from' => $from->toDateString(), 'to' => $to->toDateString()],
+                'sales_count' => $saleRows->count(),
+                'sales_amount' => $salesAmount,
+                'returns_amount' => $returnsAmount,
+                'adjustments_debit' => $debitAdjustments,
+                'adjustments_credit' => $creditAdjustments,
+                'net_sales' => $netSales,
+                'open_receivable_count' => $openRows->count(),
+                'open_receivable_amount' => $openAmount,
+                'overdue_count' => $openRows->where('due_status', 'overdue')->count(),
+                'overdue_amount' => $overdueAmount,
+                'due_soon_count' => $openRows->filter(fn ($item) => $item->due_date && $item->due_date->between($from->copy()->max(Carbon::today()), Carbon::today()->addDays(7)))->count(),
+                'due_soon_amount' => $dueSoonAmount,
+                'source_owner' => 'MDS-200',
+            ];
+        })->values()->all();
+
+        return ['as_of_at' => now()->toISOString(), 'freshness_state' => 'current', 'period' => ['from' => $from->toDateString(), 'to' => $to->toDateString()], 'currency_context' => 'Sales and receivable amounts are returned in separate currency buckets.', 'metrics' => $metrics, 'recent_activity' => SaleStatusHistory::where('company_id', $company->id)->with('sale')->latest()->limit(10)->get()->map(fn ($history) => ['id' => $history->id, 'sale_id' => $history->sale_id, 'sale_number' => $history->sale?->sale_number, 'from_status' => $history->from_status, 'to_status' => $history->to_status, 'reason' => $history->reason, 'occurred_at' => $history->created_at?->toISOString()])->values()->all()];
+    }
+
+    public function attention(Company $company): array
+    {
+        $items = collect();
+        $sales = Sale::where('company_id', $company->id)->whereIn('status', ['failed', 'for_approval'])->with(['customer', 'currency'])->latest('updated_at')->get();
+        foreach ($sales as $sale) {
+            $items->push(['id' => 'sale-'.$sale->id, 'kind' => $sale->status === 'failed' ? 'posting_failed' : 'approval_required', 'severity' => $sale->status === 'failed' ? 'high' : 'medium', 'title' => $sale->status === 'failed' ? 'Sale posting failed' : 'Sale awaiting approval', 'detail' => $sale->sale_number.' · '.($sale->customer?->display_name ?: 'Unidentified customer'), 'amount' => (string) $sale->total, 'currency' => $sale->currency?->code, 'source_owner' => 'MDS-200', 'source_id' => $sale->id, 'route' => '/sales/'.$sale->id]);
+        }
+        $receivables = ReceivableOpenItem::where('company_id', $company->id)->where('remaining_amount', '>', 0)->whereIn('due_status', ['overdue', 'due_today'])->with(['customer', 'currency', 'sourceSale'])->orderBy('due_date')->get();
+        foreach ($receivables as $item) {
+            $items->push(['id' => 'receivable-'.$item->id, 'kind' => $item->due_status === 'overdue' ? 'overdue_receivable' : 'due_today_receivable', 'severity' => $item->due_status === 'overdue' ? 'high' : 'medium', 'title' => $item->due_status === 'overdue' ? 'Overdue customer balance' : 'Receivable due today', 'detail' => ($item->sourceSale?->sale_number ?: $item->source_document_number).' · '.($item->customer?->display_name ?: 'Customer'), 'amount' => (string) $item->remaining_amount, 'currency' => $item->currency?->code, 'source_owner' => 'MDS-200', 'source_id' => $item->id, 'route' => '/sales/'.$item->source_sale_id]);
+        }
+        foreach (SalesReturn::where('company_id', $company->id)->whereIn('status', ['draft', 'for_approval', 'approved'])->with('currency')->latest('updated_at')->get() as $return) {
+            $items->push(['id' => 'return-'.$return->id, 'kind' => 'return_approval', 'severity' => 'medium', 'title' => 'Sales return requires action', 'detail' => $return->return_number, 'amount' => (string) $return->total_amount, 'currency' => $return->currency?->code, 'source_owner' => 'MDS-200', 'source_id' => $return->id, 'route' => '/sales/'.$return->sale_id]);
+        }
+        foreach (SalesAdjustment::where('company_id', $company->id)->whereIn('status', ['draft', 'for_approval', 'approved'])->with('currency')->latest('updated_at')->get() as $adjustment) {
+            $items->push(['id' => 'adjustment-'.$adjustment->id, 'kind' => 'adjustment_approval', 'severity' => 'medium', 'title' => 'Sales adjustment requires action', 'detail' => $adjustment->adjustment_number, 'amount' => (string) $adjustment->total_amount, 'currency' => $adjustment->currency?->code, 'source_owner' => 'MDS-200', 'source_id' => $adjustment->id, 'route' => '/sales/'.$adjustment->sale_id]);
+        }
+
+        return ['as_of_at' => now()->toISOString(), 'freshness_state' => 'current', 'source_owner' => 'MDS-200', 'items' => $items->take(50)->values()->all(), 'total' => $items->count()];
     }
 
     public function createDraft(array $input, Company $company, Request $request): Sale
@@ -155,6 +234,28 @@ final class SalesService
         }
     }
 
+    public function postPaidNowCommercial(Sale $sale, Company $company, Request $request): Sale
+    {
+        return DB::transaction(function () use ($sale, $company, $request) {
+            $locked = Sale::where('company_id', $company->id)
+                ->whereKey($sale->id)
+                ->with('lines')
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($locked->status === 'posted') {
+                return $locked->fresh(['lines', 'customer', 'currency', 'paymentTerm', 'receivable', 'statusHistory', 'inventoryMovements']);
+            }
+            if ($locked->status !== 'approved' || $locked->payment_basis !== 'cash') {
+                throw new RegistryConflictException('Only an Approved cash Sale can be commercially posted for paid-now completion.', ['status' => $locked->status]);
+            }
+
+            $this->post($locked, $company, $request, true);
+
+            return $locked->fresh(['lines', 'customer', 'currency', 'paymentTerm', 'receivable', 'statusHistory', 'inventoryMovements']);
+        });
+    }
+
     public function receivables(Company $company, Request $request)
     {
         $query = ReceivableOpenItem::where('company_id', $company->id)->with(['customer', 'sourceSale', 'currency'])->when($request->filled('customer_id'), fn ($q) => $q->where('customer_id', $request->string('customer_id')))->when($request->filled('status'), fn ($q) => $q->where('settlement_status', $request->string('status')))->when($request->filled('q'), fn ($q) => $q->where(fn ($search) => $search->where('source_document_number', 'ilike', '%'.$request->string('q').'%')->orWhereHas('customer', fn ($customer) => $customer->where('display_name', 'ilike', '%'.$request->string('q').'%'))));
@@ -197,6 +298,7 @@ final class SalesService
         return match ($report) {
             'sales_register' => $this->salesRegister($company, $from, $to),
             'sales_by_product' => $this->salesByProduct($company, $from, $to),
+            'sales_returns_adjustments' => $this->salesReturnsAdjustments($company, $from, $to),
             'receivables_aging' => $this->receivablesAgingReport($company, $asOf),
             default => throw new RegistryConflictException('The requested Sales source report is not supported.'),
         };
@@ -211,22 +313,38 @@ final class SalesService
             ->with(['customer', 'currency'])
             ->latest('sale_date')
             ->get();
+        $saleIds = $sales->pluck('id');
+        $returns = SalesReturn::where('company_id', $company->id)->whereIn('sale_id', $saleIds)->whereIn('status', ['posted', 'reversed'])->get()->groupBy('sale_id');
+        $adjustments = SalesAdjustment::where('company_id', $company->id)->whereIn('sale_id', $saleIds)->whereIn('status', ['posted', 'reversed'])->get()->groupBy('sale_id');
 
         return [
-            'rows' => $sales->map(fn (Sale $sale) => [
-                'id' => $sale->id,
-                'sale_number' => $sale->sale_number,
-                'date' => $sale->sale_date?->toDateString(),
-                'customer' => $sale->customer?->display_name,
-                'status' => $sale->status,
-                'currency' => $sale->currency?->code,
-                'gross_sales' => (string) $sale->subtotal,
-                'discounts' => (string) bcadd((string) $sale->line_discount_total, (string) $sale->document_discount_total, 6),
-                'tax' => (string) $sale->tax_total,
-                'amount' => (string) $sale->total,
-                'receivable_amount' => (string) $sale->receivable_amount,
-                'return_status' => $sale->return_status,
-            ])->values()->all(),
+            'rows' => $sales->map(function (Sale $sale) use ($returns, $adjustments) {
+                $saleReturns = $returns->get($sale->id, collect())->where('status', 'posted');
+                $saleAdjustments = $adjustments->get($sale->id, collect())->where('status', 'posted');
+                $returnTotal = (string) $saleReturns->sum('total_amount');
+                $debitAdjustments = (string) $saleAdjustments->where('adjustment_type', 'debit')->sum('total_amount');
+                $creditAdjustments = (string) $saleAdjustments->where('adjustment_type', 'credit')->sum('total_amount');
+                $netAmount = bcadd(bcsub(bcadd((string) $sale->total, $debitAdjustments, 6), $returnTotal, 6), bcmul($creditAdjustments, '-1', 6), 6);
+
+                return [
+                    'id' => $sale->id,
+                    'sale_number' => $sale->sale_number,
+                    'date' => $sale->sale_date?->toDateString(),
+                    'customer' => $sale->customer?->display_name,
+                    'status' => $sale->status,
+                    'currency' => $sale->currency?->code,
+                    'gross_sales' => (string) $sale->subtotal,
+                    'discounts' => (string) bcadd((string) $sale->line_discount_total, (string) $sale->document_discount_total, 6),
+                    'tax' => (string) $sale->tax_total,
+                    'amount' => (string) $sale->total,
+                    'returns' => $returnTotal,
+                    'debit_adjustments' => $debitAdjustments,
+                    'credit_adjustments' => $creditAdjustments,
+                    'net_amount' => $netAmount,
+                    'receivable_amount' => (string) $sale->receivable_amount,
+                    'return_status' => $sale->return_status,
+                ];
+            })->values()->all(),
             'source_as_of_at' => now(),
             'freshness_state' => 'current',
             'currency_context' => 'Sales amounts remain separated by source currency.',
@@ -244,6 +362,9 @@ final class SalesService
             })
             ->with(['sale.currency', 'productService'])
             ->get();
+        $returnLines = SalesReturnLine::where('company_id', $company->id)->whereHas('salesReturn', function ($query) use ($company, $from, $to) {
+            $query->where('company_id', $company->id)->where('status', 'posted')->when($from, fn ($inner) => $inner->whereDate('return_date', '>=', $from))->when($to, fn ($inner) => $inner->whereDate('return_date', '<=', $to));
+        })->with(['salesReturn.currency', 'productService'])->get();
 
         $rows = [];
         foreach ($lines as $line) {
@@ -268,6 +389,13 @@ final class SalesService
             $rows[$key]['discounts'] = bcadd($rows[$key]['discounts'], (string) $line->discount_amount, 6);
             $rows[$key]['net_sales'] = bcadd($rows[$key]['net_sales'], (string) $line->net_amount, 6);
         }
+        foreach ($returnLines as $line) {
+            $key = $line->product_service_id.'|'.($line->salesReturn?->currency?->code ?: 'UNKNOWN');
+            if (! isset($rows[$key])) {
+                $rows[$key] = ['id' => $line->product_service_id, 'product' => $line->productService?->name ?: $line->product_name_snapshot, 'product_code' => $line->productService?->code ?: $line->product_code_snapshot, 'currency' => $line->salesReturn?->currency?->code, 'quantity' => '0', 'gross_sales' => '0', 'discounts' => '0', 'net_sales' => '0', 'returns' => '0', 'margin' => null, 'margin_state' => 'unavailable_without_governed_cost'];
+            }
+            $rows[$key]['returns'] = bcadd($rows[$key]['returns'], (string) $line->total_amount, 6);
+        }
 
         return [
             'rows' => array_values($rows),
@@ -275,6 +403,14 @@ final class SalesService
             'freshness_state' => 'current',
             'currency_context' => 'Sales amounts remain separated by source currency; margin is unavailable unless a governed cost source exists.',
         ];
+    }
+
+    private function salesReturnsAdjustments(Company $company, ?string $from, ?string $to): array
+    {
+        $returns = SalesReturn::where('company_id', $company->id)->whereIn('status', ['posted', 'reversed'])->when($from, fn ($query) => $query->whereDate('return_date', '>=', $from))->when($to, fn ($query) => $query->whereDate('return_date', '<=', $to))->with(['sale', 'customer', 'currency'])->get()->map(fn (SalesReturn $return) => ['id' => $return->id, 'source_type' => 'sales_return', 'document_number' => $return->return_number, 'sale_number' => $return->sale?->sale_number, 'date' => $return->return_date?->toDateString(), 'customer' => $return->customer?->display_name, 'currency' => $return->currency?->code, 'adjustment_type' => 'return', 'amount' => (string) $return->total_amount, 'receivable_effect' => bcmul((string) $return->total_amount, '-1', 6), 'status' => $return->status]);
+        $adjustments = SalesAdjustment::where('company_id', $company->id)->whereIn('status', ['posted', 'reversed'])->when($from, fn ($query) => $query->whereDate('adjustment_date', '>=', $from))->when($to, fn ($query) => $query->whereDate('adjustment_date', '<=', $to))->with(['sale', 'customer', 'currency'])->get()->map(fn (SalesAdjustment $adjustment) => ['id' => $adjustment->id, 'source_type' => 'sales_adjustment', 'document_number' => $adjustment->adjustment_number, 'sale_number' => $adjustment->sale?->sale_number, 'date' => $adjustment->adjustment_date?->toDateString(), 'customer' => $adjustment->customer?->display_name, 'currency' => $adjustment->currency?->code, 'adjustment_type' => $adjustment->adjustment_type, 'amount' => (string) $adjustment->total_amount, 'receivable_effect' => $adjustment->adjustment_type === 'debit' ? (string) $adjustment->total_amount : bcmul((string) $adjustment->total_amount, '-1', 6), 'status' => $adjustment->status]);
+
+        return ['rows' => $returns->concat($adjustments)->sortByDesc('date')->values()->all(), 'source_as_of_at' => now(), 'freshness_state' => 'current', 'currency_context' => 'Sales correction amounts remain separated by source currency and are linked to their posted Sale.'];
     }
 
     private function receivablesAgingReport(Company $company, string $asOf): array
@@ -331,8 +467,27 @@ final class SalesService
             $currency = $this->currency($input['currency_id'] ?? $company->default_currency_id, $company);
             $to = $input['period_to'] ?? $input['statement_date'];
             $from = $input['period_from'] ?? null;
-            $items = ReceivableOpenItem::where('company_id', $company->id)->where('customer_id', $customer->id)->where('currency_id', $currency->id)->where('remaining_amount', '>', 0)->when($from, fn ($q) => $q->whereHas('sourceSale', fn ($sale) => $sale->whereDate('sale_date', '>=', $from)))->whereHas('sourceSale', fn ($sale) => $sale->whereDate('sale_date', '<=', $to))->with('sourceSale')->lockForUpdate()->get();
-            $statement = BillingStatement::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'statement_number' => $this->numbers->next($company->id, 'billing_statement'), 'customer_id' => $customer->id, 'branch_id' => $input['branch_id'] ?? null, 'currency_id' => $currency->id, 'statement_date' => $input['statement_date'], 'period_from' => $from, 'period_to' => $to, 'as_of_at' => now(), 'status' => 'generated', 'opening_balance' => 0, 'period_charges' => $items->sum(fn ($i) => $i->sourceSale?->total ?? 0), 'period_credits' => 0, 'period_applications' => $items->sum('applied_amount'), 'ending_balance' => $items->sum('remaining_amount'), 'filters' => ['customer_id' => $customer->id, 'currency_id' => $currency->id, 'period_from' => $from, 'period_to' => $to], 'generated_by' => $request->user()?->id, 'generated_at' => now(), 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key'), 'version' => 1]);
+            $allItems = ReceivableOpenItem::where('company_id', $company->id)->where('customer_id', $customer->id)->where('currency_id', $currency->id)->whereHas('sourceSale', fn ($sale) => $sale->whereIn('status', ['posted', 'reversed'])->whereDate('sale_date', '<=', $to))->with('sourceSale')->lockForUpdate()->get();
+            $items = $allItems->filter(fn (ReceivableOpenItem $item) => (! $from || ! $item->sourceSale?->sale_date || $item->sourceSale->sale_date->gte(Carbon::parse($from))) && $item->sourceSale?->sale_date?->lte(Carbon::parse($to)))->values();
+            $openingBalance = $from ? $allItems->filter(fn (ReceivableOpenItem $item) => $item->sourceSale?->sale_date && $item->sourceSale->sale_date->lt(Carbon::parse($from)))->sum(fn ($item) => (float) $item->remaining_amount) : 0;
+            $periodSales = Sale::where('company_id', $company->id)->where('customer_id', $customer->id)->where('currency_id', $currency->id)->whereIn('status', ['posted', 'reversed'])->when($from, fn ($query) => $query->whereDate('sale_date', '>=', $from))->whereDate('sale_date', '<=', $to)->get();
+            $periodReturns = SalesReturn::where('company_id', $company->id)->where('customer_id', $customer->id)->where('currency_id', $currency->id)->where('status', 'posted')->when($from, fn ($query) => $query->whereDate('return_date', '>=', $from))->whereDate('return_date', '<=', $to)->get();
+            $periodAdjustments = SalesAdjustment::where('company_id', $company->id)->where('customer_id', $customer->id)->where('currency_id', $currency->id)->where('status', 'posted')->when($from, fn ($query) => $query->whereDate('adjustment_date', '>=', $from))->whereDate('adjustment_date', '<=', $to)->get();
+            $periodCharges = bcadd((string) $periodSales->sum('total'), (string) $periodAdjustments->where('adjustment_type', 'debit')->sum('total_amount'), 6);
+            $periodCredits = bcadd((string) $periodReturns->sum('total_amount'), (string) $periodAdjustments->where('adjustment_type', 'credit')->sum('total_amount'), 6);
+            $sourceSnapshot = [
+                'basis' => 'Current governed Sales, Sales Return, Sales Adjustment, and Receivable Open Item state captured at generation.',
+                'sales' => $periodSales->pluck('id')->values()->all(),
+                'sale_snapshots' => $periodSales->map(fn (Sale $sale) => ['id' => $sale->id, 'sale_number' => $sale->sale_number, 'sale_date' => $sale->sale_date?->toDateString(), 'status' => $sale->status, 'total' => (string) $sale->total, 'paid_amount' => (string) $sale->paid_amount, 'remaining_amount' => (string) $sale->remaining_amount])->values()->all(),
+                'returns' => $periodReturns->pluck('id')->values()->all(),
+                'return_snapshots' => $periodReturns->map(fn (SalesReturn $return) => ['id' => $return->id, 'return_number' => $return->return_number, 'return_date' => $return->return_date?->toDateString(), 'status' => $return->status, 'total_amount' => (string) $return->total_amount])->values()->all(),
+                'adjustments' => $periodAdjustments->pluck('id')->values()->all(),
+                'adjustment_snapshots' => $periodAdjustments->map(fn (SalesAdjustment $adjustment) => ['id' => $adjustment->id, 'adjustment_number' => $adjustment->adjustment_number, 'adjustment_date' => $adjustment->adjustment_date?->toDateString(), 'adjustment_type' => $adjustment->adjustment_type, 'status' => $adjustment->status, 'total_amount' => (string) $adjustment->total_amount])->values()->all(),
+                'open_items' => $items->pluck('id')->values()->all(),
+                'open_item_snapshots' => $items->map(fn (ReceivableOpenItem $item) => ['id' => $item->id, 'source_sale_id' => $item->source_sale_id, 'source_document_number' => $item->source_document_number, 'original_amount' => (string) $item->original_amount, 'applied_amount' => (string) $item->applied_amount, 'remaining_amount' => (string) $item->remaining_amount, 'due_date' => $item->due_date?->toDateString(), 'settlement_status' => $item->settlement_status, 'due_status' => $item->due_status])->values()->all(),
+                'as_of_at' => now()->toISOString(),
+            ];
+            $statement = BillingStatement::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'statement_number' => $this->numbers->next($company->id, 'billing_statement'), 'customer_id' => $customer->id, 'branch_id' => $input['branch_id'] ?? null, 'currency_id' => $currency->id, 'statement_date' => $input['statement_date'], 'period_from' => $from, 'period_to' => $to, 'as_of_at' => now(), 'status' => 'generated', 'opening_balance' => $openingBalance, 'period_charges' => $periodCharges, 'period_credits' => $periodCredits, 'period_applications' => $items->sum(fn ($item) => (float) $item->applied_amount), 'ending_balance' => $allItems->sum(fn ($item) => (float) $item->remaining_amount), 'filters' => ['customer_id' => $customer->id, 'currency_id' => $currency->id, 'period_from' => $from, 'period_to' => $to], 'source_snapshot' => $sourceSnapshot, 'generated_by' => $request->user()?->id, 'generated_at' => now(), 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_identity' => $request->header('Idempotency-Key'), 'version' => 1]);
             foreach ($items as $item) {
                 $statement->openItems()->attach($item->id, ['source_sale_id' => $item->source_sale_id, 'included_amount' => $item->remaining_amount]);
             }
@@ -459,12 +614,12 @@ final class SalesService
         $sale->save();
     }
 
-    private function post(Sale $sale, Company $company, Request $request): string
+    private function post(Sale $sale, Company $company, Request $request, bool $allowCash = false): string
     {
         if ($sale->status !== 'approved') {
             throw new RegistryConflictException('Only Approved Sales can be posted.', ['status' => $sale->status]);
         }
-        if ($sale->payment_basis === 'cash') {
+        if ($sale->payment_basis === 'cash' && ! $allowCash) {
             $this->block($sale, 'collections', 'Cash Sales require Collections and a successful receipt before posting.');
         }
         if ($sale->lines->contains(fn ($line) => $line->stock_managed_snapshot)) {
@@ -472,9 +627,10 @@ final class SalesService
             $this->inventory->postSaleIssues($sale, $company, $request);
         }
         $accounts = $this->postingAccounts($company, (float) $sale->tax_total > 0);
-        $business = BusinessTransaction::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'transaction_type' => 'credit_sale', 'status' => 'posted', 'actor_id' => $request->user()?->id, 'business_date' => $sale->sale_date, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_key' => 'sale:'.$sale->id]);
+        $transactionType = $allowCash ? 'cash_sale' : 'credit_sale';
+        $business = BusinessTransaction::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'transaction_type' => $transactionType, 'status' => 'posted', 'actor_id' => $request->user()?->id, 'business_date' => $sale->sale_date, 'correlation_id' => $request->attributes->get('correlation_id'), 'idempotency_key' => 'sale:'.$sale->id]);
         $accountingId = (string) Str::uuid();
-        DB::table('accounting_transactions')->insert(['id' => $accountingId, 'business_transaction_id' => $business->id, 'company_id' => $company->id, 'transaction_type' => 'credit_sale', 'status' => 'posted', 'business_date' => $sale->sale_date, 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'created_at' => now(), 'updated_at' => now()]);
+        DB::table('accounting_transactions')->insert(['id' => $accountingId, 'business_transaction_id' => $business->id, 'company_id' => $company->id, 'transaction_type' => $transactionType, 'status' => 'posted', 'business_date' => $sale->sale_date, 'created_by' => $request->user()?->id, 'correlation_id' => $request->attributes->get('correlation_id'), 'created_at' => now(), 'updated_at' => now()]);
         $currency = $sale->currency()->firstOrFail();
         $this->accountingLine($accountingId, $accounts['receivable']->id, $sale->total, '0', $currency->code, 'Receivable for '.$sale->sale_number);
         $revenue = bcsub((string) $sale->total, (string) $sale->tax_total, 6);
@@ -483,6 +639,11 @@ final class SalesService
             $this->accountingLine($accountingId, $accounts['tax']->id, '0', $sale->tax_total, $currency->code, 'Sales tax for '.$sale->sale_number);
         }
         $receivable = ReceivableOpenItem::create(['id' => (string) Str::uuid(), 'company_id' => $company->id, 'customer_id' => $sale->customer_id, 'source_sale_id' => $sale->id, 'source_document_number' => $sale->sale_number, 'currency_id' => $sale->currency_id, 'original_amount' => $sale->total, 'remaining_amount' => $sale->total, 'due_date' => $sale->due_date, 'settlement_status' => 'unpaid', 'due_status' => $sale->due_status, 'dispute_status' => 'not_disputed', 'last_calculated_at' => now(), 'version' => 1]);
+        if ($allowCash) {
+            $sale->receivable_amount = $sale->total;
+            $sale->remaining_amount = $sale->total;
+            $sale->settlement_status = 'unpaid';
+        }
         $sale->status = 'posted';
         $sale->posted_by = $request->user()?->id;
         $sale->posted_at = now();

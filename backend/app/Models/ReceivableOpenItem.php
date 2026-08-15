@@ -41,4 +41,9 @@ class ReceivableOpenItem extends Model
     {
         return $this->belongsToMany(BillingStatement::class, 'billing_statement_open_items')->withPivot(['source_sale_id', 'included_amount'])->withTimestamps();
     }
+
+    public function salesEffects()
+    {
+        return $this->hasMany(SalesReceivableEffect::class, 'receivable_open_item_id');
+    }
 }

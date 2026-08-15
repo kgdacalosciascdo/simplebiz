@@ -3,7 +3,7 @@ export const demoSummary = {
   active_account_count: 4,
   restricted_account_count: 0,
   draft_account_count: 0,
-  position_by_currency: [{ currency_code: 'PHP', posted_balance: '551216.50' }],
+  position_by_currency: [{ currency_code: 'PHP', account: 'Main Operating Bank', posted_balance: '551216.50' }],
   as_of: '2026-08-04T09:30:00+08:00',
 }
 

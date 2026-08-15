@@ -31,4 +31,10 @@ class ProductService extends Model
     {
         return $this->belongsTo(UnitOfMeasure::class, 'base_unit_id');
     }
+
+    public function externalIdentifiers()
+    {
+        return $this->hasMany(RegistryExternalIdentifier::class, 'record_id')
+            ->where('registry_type', 'product_service');
+    }
 }

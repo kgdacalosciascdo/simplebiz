@@ -44,7 +44,7 @@ class ReportsPhase10BTest extends TestCase
         $client->postJson('/api/v1/reports/packs/'.$pack['id'].'/publish')->assertOk()->assertJsonPath('data.status', 'published');
         $client->postJson('/api/v1/reports/schedules/'.$schedule['id'].'/pause')->assertOk()->assertJsonPath('data.status', 'paused');
 
-        $client->getJson('/api/v1/reports/definitions')->assertOk()->assertJsonCount(18, 'data');
+        $client->getJson('/api/v1/reports/definitions')->assertOk()->assertJsonCount(24, 'data');
     }
 
     public function test_sales_source_report_and_compare_preserve_company_scope(): void

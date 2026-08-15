@@ -1,4 +1,5 @@
 import { useMemo, type ReactNode } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import {
   ArrowRight,
@@ -24,6 +25,10 @@ import {
 import { Bar, BarChart, Cell, LabelList, ResponsiveContainer, XAxis, YAxis } from 'recharts'
 import { Link } from 'react-router-dom'
 import { DataTable } from '../../components/DataTable'
+import { apiFetch } from '../../lib/api'
+import { demoModeEnabled } from '../../demo/demoMode'
+import { SalesCompletionPanel } from './SalesCompletionPanel'
+import { SalesPaidNowPanel } from './SalesPaidNowPanel'
 
 type Activity = {
   date: string
@@ -31,6 +36,9 @@ type Activity = {
   amount: string
   user: string
 }
+
+type SalesDashboard = { metrics: { currency?: { symbol?: string; code?: string }; net_sales: string; sales_amount: string; open_receivable_amount: string; overdue_amount: string }[]; recent_activity: { id: string; occurred_at?: string; sale_number?: string; to_status: string; reason?: string | null }[] }
+type SalesAttention = { items: { id: string; title: string; detail: string; amount?: string; currency?: string; severity: string; route?: string }[]; total: number }
 
 type ActionCard = {
   title: string
@@ -42,7 +50,7 @@ type ActionCard = {
 }
 
 const actionCards: ActionCard[] = [
-  { title: 'Cash Sales', description: 'Create a cash sale.', button: 'New Sale', icon: Calculator, tone: 'yellow' },
+  { title: 'Cash Sales', description: 'Create a cash sale.', button: 'Paid-now queue', icon: Calculator, tone: 'yellow', to: '/sales#paid-now' },
   { title: 'Credit Sales', description: 'Create a credit sale.', button: 'New Sale', icon: Calculator, tone: 'blue' },
   { title: 'Collections', description: 'Receive money as payment of customer account receivables.', button: 'Receive Payment', icon: HandCoins, tone: 'mint', to: '/collections' },
   { title: 'Customer', description: 'Create a new customer record', button: 'New Customer', icon: Contact, tone: 'peach', to: '/customers' },
@@ -103,13 +111,21 @@ const reportColumns = [
 ]
 
 const centerActions = [
-  { label: 'Create Billing Statement', icon: FileText, tone: 'mint' },
+  { label: 'Create Billing Statement', icon: FileText, tone: 'mint', to: '/billing-statements' },
   { label: 'Create Credit Adjustment', icon: FilePlus2, tone: 'blue' },
   { label: 'Create Debit Adjustment', icon: FilePlus2, tone: 'peach' },
   { label: 'Record Sales Return', icon: RotateCcw, tone: 'yellow' },
 ]
 
 export function SalesWorkspace() {
+  const dashboardQuery = useQuery({ queryKey: ['simplebiz', 'sales', 'dashboard'], queryFn: () => apiFetch<{ data: SalesDashboard }>('/sales/dashboard') })
+  const attentionQuery = useQuery({ queryKey: ['simplebiz', 'sales', 'attention'], queryFn: () => apiFetch<{ data: SalesAttention }>('/sales/attention') })
+  const liveDashboard = dashboardQuery.data?.data
+  const liveAttention = attentionQuery.data?.data
+  const liveCurrency = liveDashboard?.metrics[0]?.currency
+  const liveSnapshotData = liveDashboard?.metrics.length ? [{ name: 'Sales This Month', value: Number(liveDashboard.metrics[0].net_sales), label: `${liveCurrency?.symbol ?? liveCurrency?.code ?? ''} ${Number(liveDashboard.metrics[0].net_sales).toLocaleString()}`, color: '#2e86d7' }, { name: 'Accounts Receivables', value: Number(liveDashboard.metrics[0].open_receivable_amount), label: `${liveCurrency?.symbol ?? liveCurrency?.code ?? ''} ${Number(liveDashboard.metrics[0].open_receivable_amount).toLocaleString()}`, color: '#e64943' }, { name: 'Overdue', value: Number(liveDashboard.metrics[0].overdue_amount), label: `${liveCurrency?.symbol ?? liveCurrency?.code ?? ''} ${Number(liveDashboard.metrics[0].overdue_amount).toLocaleString()}`, color: '#f28a24' }] : demoModeEnabled ? snapshotData : []
+  const liveAttentionItems: { count: number; title: string; detail: string; tone: string; route?: string }[] = liveAttention ? liveAttention.items.map((item) => ({ count: 1, title: item.title, detail: `${item.detail}${item.amount ? ` · ${item.currency ?? ''} ${Number(item.amount).toLocaleString()}` : ''}`, tone: item.severity === 'high' ? 'red' : 'amber', route: item.route })) : demoModeEnabled ? attentionItems : []
+  const liveActivities = liveDashboard?.recent_activity.length ? liveDashboard.recent_activity.map((item) => ({ date: item.occurred_at ? new Date(item.occurred_at).toLocaleDateString() : '—', activity: `${item.sale_number ?? 'Sale'} ${item.to_status.replaceAll('_', ' ')}`, amount: '—', user: item.reason ?? 'MDS-200' })) : demoModeEnabled ? activities : []
   const columns = useMemo<ColumnDef<Activity, unknown>[]>(() => [
     { accessorKey: 'date', header: 'Date' },
     { accessorKey: 'activity', header: 'Activity' },
@@ -130,14 +146,13 @@ export function SalesWorkspace() {
       {actionCards.map((card) => <SalesActionCard key={card.title} {...card} />)}
     </section>
 
+    <SalesCompletionPanel />
+    <SalesPaidNowPanel />
+
     <section className="sb-sales-dashboard-grid sb-sales-dashboard-grid-middle">
-      <SalesPanel title="Needs Attention" icon={TriangleAlert} meta="24 items" className="sb-sales-span-two">
+      <SalesPanel title="Needs Attention" icon={TriangleAlert} meta={`${liveAttention?.total ?? (demoModeEnabled ? 24 : 0)} items`} className="sb-sales-span-two">
         <div className="sb-sales-attention-list">
-          {attentionItems.map((item) => <button type="button" className="sb-sales-attention-row" key={item.title}>
-            <span className={`sb-sales-count sb-sales-count-${item.tone}`}>{item.count}</span>
-            <span><strong>{item.title}</strong><small>{item.detail}</small></span>
-            <ArrowRight aria-hidden="true" />
-          </button>)}
+          {liveAttentionItems.length ? liveAttentionItems.map((item, index) => { const row = <><span className={`sb-sales-count sb-sales-count-${item.tone}`}>{item.count}</span><span><strong>{item.title}</strong><small>{item.detail}</small></span><ArrowRight aria-hidden="true" /></>; return item.route ? <Link to={item.route} className="sb-sales-attention-row" key={`${item.title}-${index}`}>{row}</Link> : <button type="button" className="sb-sales-attention-row" key={`${item.title}-${index}`}>{row}</button> }) : <p className="sb-sales-completion-empty">No Sales or receivables items need attention.</p>}
         </div>
         <PanelLink>View all</PanelLink>
       </SalesPanel>
@@ -145,11 +160,11 @@ export function SalesWorkspace() {
       <SalesPanel title="Sales & Receivables Snapshot" icon={List} className="sb-sales-span-two">
         <div className="sb-sales-chart" aria-label="Sales and receivables bar chart">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={snapshotData} layout="vertical" margin={{ top: 5, right: 64, bottom: 5, left: 5 }}>
+            <BarChart data={liveSnapshotData} layout="vertical" margin={{ top: 5, right: 64, bottom: 5, left: 5 }}>
               <XAxis type="number" domain={[0, 550000]} hide />
               <YAxis type="category" dataKey="name" width={142} axisLine={false} tickLine={false} tick={{ fill: '#526678', fontSize: 11 }} />
               <Bar dataKey="value" barSize={21} radius={[0, 2, 2, 0]}>
-                {snapshotData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                {liveSnapshotData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
                 <LabelList dataKey="label" position="right" fill="#526678" fontSize={10} />
               </Bar>
             </BarChart>
@@ -157,7 +172,7 @@ export function SalesWorkspace() {
         </div>
         <div className="sb-sales-total-row">
           <BarChart3 aria-hidden="true" />
-          <span>Total Sales This Month<strong>₱493,583</strong></span>
+          <span>Total Sales This Month<strong>{liveSnapshotData.length ? liveSnapshotData[0].label : 'Not available'}</strong></span>
           <small>12.6% increase vs last month</small>
           <PanelLink>View report</PanelLink>
         </div>
@@ -175,7 +190,7 @@ export function SalesWorkspace() {
 
     <section className="sb-sales-dashboard-grid sb-sales-dashboard-grid-lower">
       <SalesPanel title="Recent Activity" icon={List} className="sb-sales-span-two" footer={<PanelLink>View all</PanelLink>}>
-        <div className="sb-sales-activity-table"><DataTable data={activities} columns={columns} caption="Recent Sales activity" /></div>
+        <div className="sb-sales-activity-table"><DataTable data={liveActivities} columns={columns} caption="Recent Sales activity" empty={<p className="sb-sales-completion-empty">No Sales activity has been recorded.</p>} /></div>
       </SalesPanel>
 
       <SalesPanel title="Reports" icon={List} className="sb-sales-span-two" footer={<PanelLink>View all</PanelLink>}>
@@ -190,7 +205,7 @@ export function SalesWorkspace() {
 
       <SalesPanel title="Action Center" icon={List} footer={<PanelLink>View all</PanelLink>}>
         <div className="sb-sales-center-actions">
-          {centerActions.map(({ label, icon: Icon, tone }) => <button type="button" key={label} className={`sb-sales-center-button sb-sales-center-${tone}`}>
+          {centerActions.map(({ label, icon: Icon, tone, to }) => to ? <Link to={to} key={label} className={`sb-sales-center-button sb-sales-center-${tone}`}><Icon aria-hidden="true" /><span>{label}</span></Link> : <button type="button" key={label} className={`sb-sales-center-button sb-sales-center-${tone}`}>
             <Icon aria-hidden="true" /><span>{label}</span>
           </button>)}
         </div>

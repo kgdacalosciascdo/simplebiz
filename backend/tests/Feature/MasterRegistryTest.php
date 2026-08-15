@@ -59,6 +59,29 @@ class MasterRegistryTest extends TestCase
         $this->actingAs($user, 'sanctum')->withHeader('X-Company-ID', $other->id)->getJson("/api/v1/master-registries/business-partners/{$record}")->assertNotFound();
     }
 
+    public function test_partner_children_and_identifiers_have_governed_lifecycle_and_history(): void
+    {
+        [$user, $company] = $this->ownerContext();
+        $client = $this->actingAs($user, 'sanctum')->withHeader('X-Company-ID', $company->id);
+        $partner = $client->postJson('/api/v1/master-registries/business-partners', ['code' => 'BP-CHILD', 'official_name' => 'Child Controls', 'external_identifiers' => [['identifier_type' => 'registration_number', 'value' => 'REG-001']]])->assertCreated();
+        $partnerId = $partner->json('data.id');
+        $contact = $client->postJson("/api/v1/master-registries/business-partners/{$partnerId}/contacts", ['contact_name' => 'Primary Contact', 'email' => 'contact@example.test', 'is_primary' => true])->assertCreated();
+        $contactId = $contact->json('data.id');
+        $address = $client->postJson("/api/v1/master-registries/business-partners/{$partnerId}/addresses", ['line1' => '1 Registry Street', 'city' => 'Manila', 'country' => 'PH', 'is_primary_billing' => true])->assertCreated();
+        $addressId = $address->json('data.id');
+
+        $client->patchJson("/api/v1/master-registries/business-partners/{$partnerId}/contacts/{$contactId}", ['contact_name' => 'Updated Contact', 'version' => 1])->assertOk()->assertJsonPath('data.contact_name', 'Updated Contact');
+        $client->postJson("/api/v1/master-registries/business-partners/{$partnerId}/contacts/{$contactId}/deactivate", ['reason' => 'No longer primary'])->assertOk()->assertJsonPath('data.status', 'inactive');
+        $client->getJson("/api/v1/master-registries/business-partners/{$partnerId}/contacts/{$contactId}/history")->assertOk()->assertJsonPath('data.0.action', 'business_partner_contact.deactivated');
+        $client->patchJson("/api/v1/master-registries/business-partners/{$partnerId}/addresses/{$addressId}", ['city' => 'Quezon City', 'version' => 1])->assertOk()->assertJsonPath('data.city', 'Quezon City');
+
+        $identifierId = $client->getJson("/api/v1/master-registries/business-partners/{$partnerId}/identifiers")->assertOk()->assertJsonPath('data.0.identifier_type', 'registration_number')->json('data.0.id');
+        $client->patchJson("/api/v1/master-registries/business-partners/{$partnerId}/identifiers/{$identifierId}", ['value' => 'REG-002', 'version' => 1])->assertOk()->assertJsonPath('data.masked_value', '••••-002');
+        $client->postJson("/api/v1/master-registries/business-partners/{$partnerId}/identifiers/{$identifierId}/deactivate", ['reason' => 'Identifier retired'])->assertOk()->assertJsonPath('data.status', 'inactive');
+        $client->getJson("/api/v1/master-registries/business-partners/{$partnerId}/identifiers/{$identifierId}/history")->assertOk()->assertJsonPath('data.0.action', 'business_partner_identifier.deactivated');
+        $this->assertDatabaseHas('registry_external_identifiers', ['record_id' => $partnerId, 'value' => 'REG-002', 'status' => 'inactive']);
+    }
+
     private function ownerContext(): array
     {
         $setup = $this->postJson('/api/v1/setup/bootstrap', ['name' => 'Owner', 'email' => 'owner@example.test', 'password' => 'password-123', 'password_confirmation' => 'password-123', 'company_name' => 'Acme Demo', 'currency' => 'PHP', 'timezone' => 'Asia/Manila', 'locale' => 'en']);

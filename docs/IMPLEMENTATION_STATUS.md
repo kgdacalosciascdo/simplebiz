@@ -1,6 +1,6 @@
 # SimpleBIZ implementation status
 
-Updated: 4 August 2026
+Updated: 15 August 2026
 
 The documents in `docs/` are the final, approved, authoritative implementation baseline. This status document records the current as-built repository state and does not replace the MDS documents.
 
@@ -818,3 +818,183 @@ The final gate for the documented/currently applicable MDS-900 application scope
 `MDS-900 FULLY IMPLEMENTED`
 
 External queue-worker/scheduler/provider/storage configuration remains explicitly outside this code-only closure pass. No next module is being implemented in Phase 10C.
+
+## Phase 11 - MDS-200 Sales & Receivables Final Completion
+
+Phase 11 adds the MDS-200-owned Sales Return, Sales Debit/Credit Adjustment, receivable-effect, posted Sale reversal, billing-statement source snapshot, correction reporting, and responsive Sales workspace correction surfaces. The authoritative matrix, ownership boundaries, exact files, migration details, and validation are documented in [`docs/MDS-200-PHASE-11.md`](MDS-200-PHASE-11.md).
+
+The forward-only migrations `2026_08_15_000047_complete_sales_phase11` and `2026_08_15_000048_register_sales_corrections_report` applied successfully locally. The implementation preserves MDS-300 receipt/application ownership, MDS-500 refund ownership, MDS-600 inventory ownership, MDS-700 cash ownership, and MDS-900 shared report execution ownership.
+
+The gate is:
+
+`MDS-200 NOT YET FULLY IMPLEMENTED`
+
+Cash/paid-now orchestration, complete presentation/export/detail coverage, and broader live dashboard/attention wiring remain documented gaps. No next official module was started.
+
+## Phase 11B - MDS-200 Sales & Receivables Final Closure
+
+Phase 11B closes the remaining MDS-200-owned gaps from Phase 11. The complete closure matrix, ownership boundaries, API/UI details, and failure semantics are documented in [`docs/MDS-200-PHASE-11B.md`](MDS-200-PHASE-11B.md). The branch remains `develop`; deployment configuration was preserved and no files were staged, committed, pushed, reset, or cleaned.
+
+### Phase 11B implementation summary
+
+- Added atomic, idempotent paid-now completion for approved cash Sales through the existing MDS-300 Receipt/Application path, including partial payment, owner-module inventory/cash effects, conflicting retry protection, and rollback-safe failure behavior.
+- Added immutable billing statement row snapshots and responsive statement history, generation, detail, and browser print/Save-as-PDF presentation. Shared report export remains owned by MDS-900.
+- Added live MDS-200 Sales dashboard and Needs Attention source contracts and wired Dashboard/Sales consumers to them, with explicit currency and freshness context and demo fixtures limited to demo mode.
+- Added a responsive Sale detail screen and enriched the Sale resource with lifecycle, receivable, receipts, inventory, returns, and adjustments.
+- Added focused Phase 11B regression coverage without changing business migrations or deployment configuration.
+
+### Phase 11B validation
+
+- Focused Sales tests: **11 passed, 89 assertions** after the final validation run (including Phase 4A, Phase 11, and Phase 11B coverage).
+- Complete backend suite: **90 passed, 1 intentionally skipped PostgreSQL-only schema test, 882 assertions** after the final validation run.
+- Frontend: `npm ci`, `npm run test`, ESLint, TypeScript/Vite production build, and Pint passed. npm reported two high-severity dependency advisories; no automatic audit fix was applied because dependency upgrades are outside this business-scope change.
+- Migrations remain clean through `2026_08_15_000048_register_sales_corrections_report`; no new Phase 11B migration was needed.
+- `git diff --check` passed. Docker runtime and Render CLI validation remain outside this application-scope pass and were not required because deployment configuration was not changed.
+
+The completion gate is:
+
+`MDS-200 FULLY IMPLEMENTED`
+
+The next official module should be selected only after reviewing the documented owner boundaries. No next official module was started in Phase 11B.
+## Phase 12 — MDS-700 Cash Accounts Final Closure
+
+Phase 12 is implemented. Cash Account profiles now support governed `pending_closure` and `closed` lifecycle states with requested, under-review, balance-resolution, approved, closed, and cancelled closure states; request/review/resolve/approve/close/cancel actions; archive evidence; optimistic version checks; blocker snapshots; re-evaluation before close; segregation of duties; retained history; audit records; and lifecycle events. Closure blockers cover non-zero posted balance, unresolved movement/transfer documents, pending checks, open counts, open reconciliations, unresolved statement imports, open outstanding reconciliation items, and active custodians.
+
+Financially used Cash Accounts cannot change their Asset Account Title or Currency mapping. Cash Account summary and Needs Attention now disclose MDS-700 ownership, source-as-of, freshness, currency context, source metrics, and drilldown-ready exception items. MDS-700 source projections and MDS-900 contracts/definitions were added for Cash Movement History, Cash Transfer History, Cash Count, Cash Reconciliation, and Cash Account Exceptions. Existing manual/limited statement import remains the Free-edition path because the specification does not name a machine statement format or provider contract.
+
+The focused Phase 12 regression suite is `tests/Feature/CashAccountPhase12Test.php`. No business module beyond MDS-700 source ownership was implemented in this phase.
+
+### Phase 12 validation
+
+- Focused `CashAccountPhase12Test`: **2 passed, 25 assertions**.
+- Complete backend suite: **92 passed, 1 intentionally skipped PostgreSQL-only schema test, 907 assertions**.
+- Frontend: **18 tests passed across 10 files**; ESLint and TypeScript/Vite production build passed.
+- `vendor/bin/pint --test` and `git diff --check` passed. Migrations `000049` and `000050` are applied locally.
+- Docker runtime validation was unavailable because the Docker daemon is not running; Render CLI validation was unavailable because the CLI is not installed.
+
+The completion gate is:
+
+`MDS-700 FULLY IMPLEMENTED`
+
+No next official module was started in Phase 12.
+
+## Phase 13 — MDS-100 Dashboard Final Completion
+
+Phase 13 completes the MDS-100 Dashboard composition and presentation layer. The complete traceability matrix, source ownership map, API contract, context behavior, failure semantics, responsive UI, and validation notes are documented in [`docs/MDS-100-PHASE-13.md`](MDS-100-PHASE-13.md).
+
+### Phase 13 implementation summary
+
+- Added the read-only `/api/v1/dashboard` orchestration endpoint and `DashboardService`. It composes permission-aware MDS-200 through MDS-900 source projections, explicit company/period/as-of/currency context, source freshness, partial failures, attention items, recent activity, quick actions, and governed report links.
+- Added MDS-900 Business Performance integration through the published `ANL-MGT-001` source implementation. The Dashboard does not create P&L formulas or operational totals.
+- Replaced the Dashboard's production fixture fallback with truthful live empty/error states. Preview and explicit demo mode remain isolated and labelled.
+- Completed the responsive Dashboard UI with source-backed KPI cards, Needs Attention, Business Performance, Cash In vs Cash Out, Recent Activity, Records & Ledgers, Reports, and Action Center surfaces using TanStack Query/Table, Recharts, Lucide, and existing owner routes.
+- No Dashboard-owned database table, migration, transaction workflow, operational ledger, deployment configuration, or unsupported feature was added.
+
+### Phase 13 validation
+
+- `php artisan route:list --path=api/v1/dashboard`: Dashboard route registered.
+- PHP syntax checks passed for DashboardService, DashboardController, ReportsService, and API routes.
+- Frontend `npm run lint`: passed.
+- Frontend `npm run build`: passed.
+- Focused DashboardPhase13Test: 3 passed, 30 assertions; full php artisan test: 95 passed, 1 skipped, 937 assertions.
+- vendor/bin/pint --test, git diff --check, npm ci, npm run lint, npm run test (18 passed across 10 files), and npm run build passed.
+- npm audit --audit-level=high still reports two high-severity advisories in brace-expansion and nanoid; no dependency remediation was performed in this phase.
+- Docker client is installed but its Linux daemon is unavailable; Render CLI is not installed. Neither runtime validation could be executed.
+
+The completion gate is:
+
+`MDS-100 FULLY IMPLEMENTED`
+
+Branch-filtered source projections remain an explicit owner-contract dependency and are rejected safely rather than represented with misleading company-wide values. No next phase was implemented in Phase 13.
+
+## Phase 14 — MDS-1000 Master Registries Final Closure
+
+Phase 14 completes the MDS-1000 Master Registries scope for the documented SimpleBIZ Free edition. The complete traceability matrix, registry inventory, ownership boundaries, API/UI details, and validation record are documented in [`docs/MDS-1000-PHASE-14.md`](MDS-1000-PHASE-14.md).
+
+### Phase 14 implementation summary
+
+- Added governed contact/address update, lifecycle, history, and safe detail resources under the authoritative Business Partner identity.
+- Added versioned, effective-dated, company-scoped external identifier lifecycle metadata, masked responses, CRUD/history routes, duplicate protection, and product/partner detail presentation.
+- Added bounded, searchable active/effective lookup contracts and registry status filters/pagination/detail/history UI.
+- Replaced hard-coded Master Registry summary values with the live MDS-1000 summary projection and honest empty/unavailable states.
+- Preserved MDS-700 Cash Account ownership, MDS-1100 configuration ownership, operational transaction snapshots, and all deployment configuration.
+
+### Phase 14 validation
+
+- Migrations `2026_08_15_000051_complete_master_registry_identifiers` and `2026_08_15_000052_add_master_registry_child_lifecycle` applied successfully.
+- Focused Master Registry coverage: **12 passed, 69 assertions**.
+- Full backend suite: **97 passed, 1 intentionally skipped PostgreSQL-only schema test, 964 assertions**.
+- Frontend: **18 tests passed across 10 files**; ESLint, TypeScript/Vite build, Pint, and `git diff --check` passed.
+- Existing npm high advisories remain in `brace-expansion` and `nanoid`; no dependency remediation was performed. Docker/Render CLI runtime checks were not available in this application-scope pass.
+
+The completion gate is:
+
+`MDS-1000 FULLY IMPLEMENTED`
+
+The next recommended bounded module is:
+
+`Phase 15 — MDS-1100 Settings & Administration Final Closure`
+
+No MDS-1100 or MDS-000 implementation was started in Phase 14.
+
+## Phase 15 - MDS-1100 Settings & Administration Final Closure
+
+Phase 15 completes the documented SimpleBIZ Free-edition Settings & Administration scope. The complete closure matrix, ownership boundaries, API surface, configuration lifecycle, security/privacy controls, external-service limits, and validation evidence are documented in [`docs/MDS-1100-PHASE-15.md`](MDS-1100-PHASE-15.md).
+
+### Phase 15 implementation summary
+
+- Added the live settings workspace with permission-filtered destinations, search, setup progress, needs-attention items, recent activity, and truthful Free/commercial service states.
+- Added company configuration metadata, versioned published change sets, effective-value/source reporting, personal preferences, notification preferences, module state, session controls, administrative audit search, scoped administrative exports, and protected two-party ownership transfer.
+- Added responsive Account & Subscription, Company Profile, Security & Audit, and Settings Operations screens while preserving Core, MDS-1000, transaction, report, Commerce, Usage, and provider ownership boundaries.
+- Preserved credential/secret boundaries and did not add transaction workflows, operational ledgers, report calculations, Commerce billing, external integrations, or unsupported provider behavior.
+
+### Phase 15 validation
+
+- Migration `2026_08_15_000053_complete_settings_phase15` applied successfully.
+- Focused SettingsPhase15 coverage: **4 passed, 36 assertions**.
+- Full backend suite: **101 passed, 1 intentionally skipped PostgreSQL-only schema test, 1,000 assertions**.
+- Frontend: **18 tests passed across 10 files**; ESLint, TypeScript/Vite build, Pint, and `git diff --check` passed.
+- Docker Desktop Linux daemon was unavailable; Render CLI was not installed. Docker image/runtime and Blueprint validation could not run locally.
+
+The completion gate is:
+
+`MDS-1100 FULLY IMPLEMENTED`
+
+The next recommended bounded phase is:
+
+`Phase 16 - MDS-000 Core + whole-system final acceptance`
+
+No MDS-000 closure work was included in Phase 15.
+
+## Phase 16 - MDS-000 Core + Whole-System Final Acceptance
+
+Phase 16 is the final planned implementation phase. It closes the MDS-000 Core-owned gaps identified by direct repository inspection and records the whole-system acceptance decision in [`docs/MDS-000-PHASE-16-FINAL-ACCEPTANCE.md`](MDS-000-PHASE-16-FINAL-ACCEPTANCE.md). No new business module was started, and existing worktree changes were preserved without staging, committing, pushing, resetting, or cleaning.
+
+### Phase 16 implementation summary
+
+- Added permission- and company-scoped Core global search across the completed source registries and operational records, with safe result metadata and existing workspace routes.
+- Added the Core search permission to fresh-company Business Owner, Administrator, and Member bootstrap grants, with migration coverage for existing roles.
+- Added the Core in-app notification store/service/API with unread state, read/read-all actions, stable event/source metadata, expiry, idempotency, audit evidence, and an explicit external-delivery boundary.
+- Added API correlation metadata for validation and safe unexpected errors, preserved safe HTTP error statuses, and strengthened bearer-token logout revocation.
+- Wired the existing React shell search and notification controls to the Core APIs with Ctrl/Cmd+K, keyboard-accessible dialogs, loading/empty/error states, mobile-safe surfaces, read state, and route navigation.
+- Added final cross-module acceptance coverage and reconciled the authoritative MDS-000 and module matrix. No transaction, accounting, permission-model, registry, deployment-plan, or user-facing business workflow was changed.
+
+### Phase 16 validation
+
+- Migration `2026_08_15_000054_core_final_acceptance` applied successfully locally.
+- Focused `CoreFinalAcceptanceTest`: **4 passed, 39 assertions**.
+- Complete backend suite: **105 passed, 1 intentionally skipped PostgreSQL-only schema test, 1,039 assertions**.
+- Frontend: **18 tests passed across 10 files**; ESLint, TypeScript/Vite build, and Pint passed.
+- `git diff --check` completed without content errors; existing LF-to-CRLF warnings remain from the Windows worktree.
+- Search/notification routes and the scheduled reports command are registered.
+- Docker client is installed but its Linux daemon is unavailable; Render CLI is not installed. Docker image/runtime and Blueprint validation therefore remain environment-dependent follow-up checks. Existing Render free-tier configuration was preserved.
+
+The final gates are:
+
+`MDS-000 FULLY IMPLEMENTED`
+
+`SIMPLEBIZ ALL DOCUMENTED MODULES FULLY IMPLEMENTED`
+
+`SYSTEM FINAL ACCEPTANCE PASSED`
+
+Operational Docker/Render checks remain external deployment validation and do not represent an application Core gap.

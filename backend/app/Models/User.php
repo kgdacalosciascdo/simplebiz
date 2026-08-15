@@ -86,4 +86,9 @@ class User extends Authenticatable
             ->withPivot('company_id')
             ->withTimestamps();
     }
+
+    public function preferences()
+    {
+        return $this->hasMany(UserPreference::class);
+    }
 }

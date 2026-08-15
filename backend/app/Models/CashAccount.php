@@ -21,7 +21,7 @@ class CashAccount extends Model
 
     protected function casts(): array
     {
-        return ['account_identifier_encrypted' => 'encrypted', 'restricted_capabilities' => 'array', 'version' => 'integer', 'status_changed_at' => 'datetime', 'activated_at' => 'datetime', 'restricted_at' => 'datetime', 'deactivated_at' => 'datetime', 'reactivated_at' => 'datetime', 'last_activity_at' => 'datetime', 'last_count_at' => 'datetime', 'last_reconciliation_at' => 'datetime'];
+        return ['account_identifier_encrypted' => 'encrypted', 'restricted_capabilities' => 'array', 'closure_blockers' => 'array', 'version' => 'integer', 'status_changed_at' => 'datetime', 'activated_at' => 'datetime', 'restricted_at' => 'datetime', 'deactivated_at' => 'datetime', 'reactivated_at' => 'datetime', 'closure_effective_date' => 'date', 'closure_requested_at' => 'datetime', 'closure_reviewed_at' => 'datetime', 'closure_approved_at' => 'datetime', 'closed_at' => 'datetime', 'closure_cancelled_at' => 'datetime', 'last_activity_at' => 'datetime', 'last_count_at' => 'datetime', 'last_reconciliation_at' => 'datetime'];
     }
 
     public function type()
@@ -67,5 +67,10 @@ class CashAccount extends Model
     public function movements()
     {
         return $this->hasMany(CashMovement::class);
+    }
+
+    public function attachments()
+    {
+        return $this->morphMany(Attachment::class, 'record', 'record_type', 'record_id');
     }
 }

@@ -13,6 +13,6 @@ class TransitionCashAccountRequest extends FormRequest
 
     public function rules(): array
     {
-        return ['reason' => ['required', 'string', 'max:1000'], 'restricted_capabilities' => ['nullable', 'array'], 'restricted_capabilities.*' => ['string']];
+        return ['reason' => ['required', 'string', 'max:1000'], 'version' => ['nullable', 'integer', 'min:1'], 'restricted_capabilities' => ['nullable', 'array'], 'restricted_capabilities.*' => ['string']];
     }
 }
