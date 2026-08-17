@@ -16,7 +16,7 @@ chmod -R ug+rwX storage bootstrap/cache
 # the existing web route file contains a closure route.
 php artisan config:cache
 echo "Running Laravel migrations..."
-php artisan migrate:fresh --force
+php artisan migrate --force
 php-fpm -F &
 PHP_FPM_PID=$!
 nginx -c /tmp/nginx.conf -g 'daemon off;' &
