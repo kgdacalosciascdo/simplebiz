@@ -1,6 +1,6 @@
 # SimpleBIZ Render Staging Deployment
 
-Updated: 4 August 2026
+Updated: 15 August 2026
 
 This guide prepares the existing SimpleBIZ Laravel and React applications for a Render staging deployment. It does not make SimpleBIZ production-ready and does not change any business module or workflow.
 
@@ -14,11 +14,11 @@ The root `render.yaml` defines:
 
 The Blueprint uses Render's root-directory-relative settings for the Dockerfile, Docker context, build commands, migration command, and static publish directory. See the [Render Blueprint specification](https://render.com/docs/blueprint-spec) and [Render monorepo guidance](https://render.com/docs/monorepo-support) when reviewing or changing the Blueprint.
 
-The checked-in staging branch is `staging`. Change the `branch` values in `render.yaml` if the repository uses a different deployment branch before creating the Blueprint.
+The checked-in staging branch is `develop`, and both services in `render.yaml` deploy from that branch.
 
 ## Create the Blueprint
 
-1. Push the repository to the selected Git provider and create or select the `staging` branch.
+1. Push the repository to the selected Git provider and create or select the `develop` branch.
 2. In Render, create a new Blueprint and select this repository and branch.
 3. Review the three resources before applying the Blueprint.
 4. Keep the backend and database in Singapore. Static Sites are globally served and do not use a region setting.
@@ -42,7 +42,7 @@ The backend uses:
 - `LOG_CHANNEL=stderr` and `LOG_LEVEL=info`
 - `CORS_ALLOWED_ORIGINS` and `FRONTEND_URL` from the exact static-site origin
 - `FILESYSTEM_DISK=local` for the initial temporary staging choice
-- `QUEUE_CONNECTION=sync` because the current repository has no implemented queue worker requirement
+- `QUEUE_CONNECTION=sync`; the application has queue-backed report contracts, but this free staging Blueprint has no worker service, so queued work runs inline in the web request
 
 The static site receives the backend's `RENDER_EXTERNAL_URL` as a build-only value and builds `VITE_API_URL` as `<backend-public-url>/api/v1`.
 
@@ -66,10 +66,13 @@ The response contains only service status, environment name, and timestamp; it d
 
 ## Migration and setup behavior
 
-Every backend deploy runs this Render pre-deploy command before the web process starts:
+The free Render service does not use a Blueprint pre-deploy command. The existing Docker startup script receives Render's runtime environment first, then runs configuration caching and the normal forward-only migration before starting PHP-FPM and Nginx:
 
 ```bash
+php artisan config:cache
 php artisan migrate --force
+php-fpm -F &
+nginx -c /tmp/nginx.conf -g 'daemon off;'
 ```
 
 Migrations are forward-only. The deployment does not run seeders, create demo data, or bootstrap a company automatically. After the first successful deploy, open the frontend and complete the existing one-time SimpleBIZ company setup flow.
@@ -105,7 +108,7 @@ Staging uses the Render internal Postgres connection URL, the public backend URL
 
 ## Deployments, rollback, and troubleshooting
 
-Both services auto-deploy commits pushed to `staging`. A backend migration is applied before the new backend process starts. Review the backend deploy log first when a deploy fails, then the pre-deploy migration output, then the static-site build log.
+Both services auto-deploy commits pushed to `develop`. The backend startup script applies migrations before the new web process starts. Review the backend deploy log first when a deploy fails, then the startup migration output, then the static-site build log.
 
 For a bad application deploy, use Render's service rollback to the last known-good deploy. A rollback does not automatically undo a database migration; database changes must remain backward-compatible or have an explicitly designed forward-only recovery migration.
 
@@ -114,7 +117,7 @@ For common checks:
 - `502` or failed health check: inspect the backend container logs and confirm Nginx is listening on Render's `PORT`.
 - CORS errors: confirm the static site's exact `RENDER_EXTERNAL_URL` is present in backend `CORS_ALLOWED_ORIGINS`.
 - API connection errors: confirm the static-site build used the backend service URL and that the URL ends with `/api/v1` exactly once.
-- Database errors: confirm the database is available and inspect the `php artisan migrate --force` pre-deploy output.
+- Database errors: confirm the database is available and inspect the startup migration output from `php artisan migrate --force`.
 - Missing evidence: check the selected filesystem disk and remember that local staging storage is ephemeral.
 
 ## Validation commands
@@ -150,5 +153,6 @@ Run the image only with a safe local test `.env` or explicit non-production envi
 - Free Render web services can sleep and have ephemeral filesystems.
 - Free Render Postgres is limited, has no backups, and expires after 30 days.
 - Local attachment storage is temporary unless an S3-compatible disk or supported persistent disk is configured.
-- There is no queue worker service because the current application has no queued job requirement; staging uses the synchronous queue connection.
+- The application has queue-backed report job contracts, but the current Blueprint has no worker service and uses `QUEUE_CONNECTION=sync`; queued report work therefore runs inline in the web request in this staging configuration.
+- The `reports:run-due` schedule is registered in Laravel but the current Blueprint has no scheduler process. Scheduled reports require a separately authorized scheduler runtime before production use.
 - Mail delivery and all business-module scope remain governed by the existing implementation status and MDS documentation.
